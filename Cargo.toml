@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/dff-core", "crates/dff-cli", "crates/dff-wasm"]
+
+[profile.release]
+debug = false
+opt-level = 3

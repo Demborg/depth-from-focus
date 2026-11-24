@@ -1,0 +1,93 @@
+/* demborg.se accent colour (purple in light mode, pale yellow in dark, copied from
+   demborg.github.io src/styles/global.css) on Pico CSS, but as a dev tool: square corners,
+   monospace everywhere, thin rules instead of shadows. */
+:root {
+  --pico-border-radius: 0;
+  --pico-font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --pico-font-family-sans-serif: var(--pico-font-family);
+  --pico-font-size: 87.5%;
+  --pico-line-height: 1.45;
+  --pico-form-element-spacing-vertical: 0.45rem;
+  --pico-form-element-spacing-horizontal: 0.75rem;
+  --pico-box-shadow: none;
+  --scene-bg: #f3f2f6;
+}
+
+h1, h2, h3, h4 { --pico-font-weight: 600; letter-spacing: 0; }
+
+button.outline,
+[role="button"].outline {
+  --pico-border-width: 2px;
+}
+
+html:root:root:root {
+  --db-chroma: 0.12;
+  --pico-primary: oklch(var(--db-lightness) var(--db-chroma) var(--db-hue));
+  --pico-primary-background: var(--pico-primary);
+  --pico-primary-border: var(--pico-primary);
+  --pico-primary-underline: var(--pico-primary);
+  --pico-primary-hover: oklch(calc(var(--db-lightness) + var(--db-hover-mod)) var(--db-chroma) var(--db-hue));
+  --pico-primary-hover-background: var(--pico-primary-hover);
+  --pico-primary-hover-border: var(--pico-primary-hover);
+  /* Text on accent backgrounds (buttons, switches): dark, since both accents are light. */
+  --pico-primary-inverse: #14151a;
+}
+
+html[data-theme="light"],
+html:root:not([data-theme="dark"]) {
+  --db-lightness: 0.7;
+  --db-hover-mod: -0.1;
+  --db-hue: 280;
+}
+
+@media only screen and (prefers-color-scheme: dark) {
+  html:root:not([data-theme="light"]) {
+    --db-lightness: 0.88;
+    --db-hover-mod: 0.1;
+    --db-hue: 100;
+    --scene-bg: #0f1115;
+  }
+}
+
+html[data-theme="dark"] {
+  --db-lightness: 0.88;
+  --db-hover-mod: 0.1;
+  --db-hue: 100;
+  --scene-bg: #0f1115;
+}
+
+nav.container-fluid {
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  margin-bottom: var(--pico-spacing);
+}
+
+.brand {
+  color: var(--pico-contrast);
+  text-decoration: none;
+}
+
+.ai-badge {
+  display: inline-flex;
+  color: var(--pico-muted-color);
+  line-height: 1;
+}
+
+.ai-badge:hover,
+.ai-badge:focus-visible {
+  color: var(--pico-primary);
+}
+
+.ai-badge .icon {
+  display: inline-flex;
+  width: 2em;
+  height: 2em;
+}
+
+.ai-badge .icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+[hidden] {
+  display: none !important;
+}

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Depth from focus · Axel Demborg</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.0.6/css/pico.min.css">
+<link rel="stylesheet" href="site.css">
+<style>
+  html, body { height: 100%; }
+  body { display: grid; grid-template-rows: auto 1fr; }
+  .app { display: grid; grid-template-columns: 22rem 1fr; min-height: 0; }
+  aside { padding: 0 var(--pico-spacing) var(--pico-spacing); overflow-y: auto; }
+  aside section { margin-bottom: 1.25rem; }
+  aside h2 { font-size: 0.8rem; margin-bottom: 0.5rem; text-transform: uppercase; color: var(--pico-muted-color); }
+  #qr { background: #fff; padding: 0.6rem; width: 11rem; }
+  #qr svg { display: block; width: 100%; height: auto; }
+  .url { font-size: 0.7rem; color: var(--pico-muted-color); word-break: break-all; margin-top: 0.4rem; }
+  #preview { width: 100%; max-height: 16rem; aspect-ratio: 9 / 16; object-fit: contain; background: #000; border: 1px solid var(--pico-muted-border-color); }
+  #b-sweep { width: 100%; margin-bottom: 0.4rem; }
+  progress { margin-bottom: 0; }
+  label.range { display: grid; grid-template-columns: 1fr auto; font-size: 0.9rem; margin-bottom: 0; }
+  label.range output { color: var(--pico-muted-color); font-variant-numeric: tabular-nums; }
+  label.range input { grid-column: 1 / -1; margin-bottom: 0.4rem; }
+  [role="group"] { margin-bottom: 0.75rem; }
+  [role="group"] button { padding: 0.3rem 0.8rem; font-size: 0.9rem; }
+  .stats { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0; }
+  .stats div { display: flex; justify-content: space-between; gap: 1rem; }
+  .stats dd { margin: 0; font-variant-numeric: tabular-nums; color: var(--pico-color); text-align: right; }
+  details { margin-bottom: 0.75rem; }
+  .log { font-size: 0.7rem; color: var(--pico-muted-color); white-space: pre-wrap; margin: 0; }
+  main.view { position: relative; min-width: 0; margin: 0 var(--pico-spacing) var(--pico-spacing) 0; border: 1px solid var(--pico-muted-border-color); overflow: hidden; background: var(--scene-bg); }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 2rem; text-align: center; color: var(--pico-muted-color); }
+  #empty p { max-width: 28rem; }
+  .hint { position: absolute; left: 1rem; bottom: 0.75rem; font-size: 0.75rem; color: var(--pico-muted-color); pointer-events: none; }
+  .status { font-size: 0.9rem; color: var(--pico-muted-color); }
+  .status.linked { color: var(--pico-primary); }
+  .status.bad { color: var(--pico-del-color); }
+  @media (max-width: 768px) {
+    body { height: auto; }
+    .app { grid-template-columns: 1fr; }
+    main.view { height: 70vh; margin: 0 var(--pico-spacing) var(--pico-spacing); }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script src="vendor/qrcode.js"></script>
+<script>if (new URLSearchParams(location.search).has("trace")) document.write('<script src="debug/rtc-trace.js"><\/script>');</script>
+</head>
+<body>
+<nav class="container-fluid">
+  <ul>
+    <li><a href="https://demborg.se" class="brand"><strong>Axel Demborg</strong></a></li>
+    <li>Depth from focus</li>
+  </ul>
+  <ul>
+    <li><span class="status" id="status"><span id="status-text">Starting…</span></span></li>
+    <li><a class="ai-badge" href="https://0rwx.com" target="_blank" rel="noopener" title="AI:X · AI made: AI had execute permissions" aria-label="AI usage AI:X, AI made" data-svg="img/ai-x.svg"></a></li>
+  </ul>
+</nav>
+
+<div class="app">
+  <aside>
+    <section id="pairbox" hidden>
+      <h2>Pair your phone</h2>
+      <p class="stats">Scan with the phone's camera, then point it at something with texture.</p>
+      <div id="qr"></div>
+      <div class="url" id="pairurl"></div>
+    </section>
+
+    <section id="livebox" hidden>
+      <video id="preview" playsinline muted autoplay></video>
+    </section>
+
+    <section>
+      <button id="b-sweep" disabled>Sweep focus</button>
+      <progress id="prog" max="1" value="0"></progress>
+      <details>
+        <summary>Focus range</summary>
+        <label class="range" for="r-near">Nearest <output id="o-near">25 cm</output>
+          <input id="r-near" type="range" min="12" max="80" value="25"></label>
+        <label class="range" for="r-far">Farthest <output id="o-far">160 cm</output>
+          <input id="r-far" type="range" min="40" max="400" value="160"></label>
+      </details>
+    </section>
+
+    <section>
+      <h2>View</h2>
+      <div role="group">
+        <button id="d-smooth" data-depth="smooth" aria-pressed="true">Refined</button>
+        <button id="d-raw" data-depth="raw" aria-pressed="false" class="outline">Raw</button>
+      </div>
+      <label class="range" for="r-conf">Min confidence <output id="o-conf">1.6</output>
+        <input id="r-conf" type="range" min="1" max="4" step="0.05" value="1.6"></label>
+      <label class="range" for="r-edge">Drop depth jumps over <output id="o-edge">6.0%</output>
+        <input id="r-edge" type="range" min="0" max="15" step="0.5" value="6"></label>
+      <label class="range" for="r-size">Point size <output id="o-size">2.0</output>
+        <input id="r-size" type="range" min="0.5" max="6" step="0.25" value="2"></label>
+      <label><input type="checkbox" role="switch" id="c-level" checked> Level with phone gravity</label>
+    </section>
+
+    <section>
+      <dl class="stats">
+        <div><dt>Sweep</dt><dd id="s-sweep">–</dd></div>
+        <div><dt>Depth</dt><dd id="s-wasm">–</dd></div>
+        <div><dt>Points</dt><dd id="s-pts">–</dd></div>
+        <div><dt>Range</dt><dd id="s-range">–</dd></div>
+        <div><dt>Orientation</dt><dd id="s-ori">–</dd></div>
+      </dl>
+    </section>
+
+    <details>
+      <summary>Log</summary>
+      <pre class="log" id="log"></pre>
+    </details>
+  </aside>
+
+  <main class="view">
+    <canvas id="gl"></canvas>
+    <div id="empty"><p>The phone sweeps its lens through 40 focus settings. Each pixel's depth is where it looked sharpest, so points appear as the focus moves through the scene.</p></div>
+    <div class="hint">drag to orbit · right-drag to pan · scroll to zoom</div>
+  </main>
+</div>
+<script>
+  // Inline the AI badge so it takes the text colour, as on demborg.se.
+  for (const a of document.querySelectorAll("[data-svg]")) fetch(a.dataset.svg).then((r) => r.text()).then((t) => { a.innerHTML = `<span class="icon">${t}</span>`; });
+</script>
+<script type="module" src="viewer.js"></script>
+</body>
+</html>

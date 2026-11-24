@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Depth from focus · capture</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.0.6/css/pico.min.css">
+<link rel="stylesheet" href="site.css">
+<style>
+  body { padding-bottom: env(safe-area-inset-bottom); }
+  nav.container-fluid { margin-bottom: 0; }
+  #stage { position: relative; background: #000; }
+  video { width: 100%; display: block; }
+  /* In-focus highlight, drawn at 270x480 and stretched over the video. */
+  #hl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; transition: opacity 1.2s; }
+  .bar { display: flex; gap: 0.5rem; padding: 0.75rem var(--pico-spacing) 0; }
+  .bar button { flex: 1; margin: 0; }
+  .legend { display: flex; gap: 1rem; padding: 0.5rem var(--pico-spacing) 0; font-size: 0.75rem; color: var(--pico-muted-color); }
+  .legend i { display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.35em; vertical-align: -0.05em; }
+  pre#out { margin: 0.75rem var(--pico-spacing); padding: 0.5rem 0.75rem; font-size: 0.7rem; max-height: 30vh; overflow: auto; white-space: pre-wrap; }
+</style>
+<script>if (new URLSearchParams(location.search).has("trace")) document.write('<script src="debug/rtc-trace.js"><\/script>');</script>
+</head>
+<body>
+<nav class="container-fluid">
+  <ul><li><strong>Depth from focus</strong></li></ul>
+  <ul><li><a class="ai-badge" href="https://0rwx.com" target="_blank" rel="noopener" title="AI:X · AI made" aria-label="AI usage AI:X, AI made" data-svg="img/ai-x.svg"></a></li></ul>
+</nav>
+<div id="stage"><video id="v" playsinline muted autoplay></video><canvas id="hl" width="270" height="480"></canvas></div>
+<div class="legend"><span><i style="background:#3cff78"></i>in focus now</span><span><i style="background:#28bec8;opacity:.5"></i>captured</span></div>
+<div class="bar">
+  <button id="start" class="outline">Start camera</button>
+  <button id="sweep">Sweep</button>
+</div>
+<pre id="out"></pre>
+<script>
+  for (const a of document.querySelectorAll("[data-svg]")) fetch(a.dataset.svg).then((r) => r.text()).then((t) => { a.innerHTML = `<span class="icon">${t}</span>`; });
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
