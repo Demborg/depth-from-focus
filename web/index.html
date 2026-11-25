@@ -33,6 +33,12 @@
   #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   #empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 2rem; text-align: center; color: var(--pico-muted-color); }
   #empty p { max-width: 28rem; }
+  #m-list { padding-left: 1.4rem; }
+  #m-list li { list-style: decimal; font-variant-numeric: tabular-nums; color: var(--pico-color); margin: 0; }
+  #m-list li span { color: var(--pico-muted-color); }
+  #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .mlabel { position: absolute; transform: translate(-50%, -130%); font-size: 0.75rem; padding: 0.05rem 0.35rem; background: var(--pico-background-color); color: var(--pico-color); border: 1px solid var(--pico-primary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  main.view.measuring #gl { cursor: crosshair; }
   .hint { position: absolute; left: 1rem; bottom: 0.75rem; font-size: 0.75rem; color: var(--pico-muted-color); pointer-events: none; }
   .status { font-size: 0.9rem; color: var(--pico-muted-color); }
   .status.linked { color: var(--pico-primary); }
@@ -105,6 +111,15 @@
     </section>
 
     <section>
+      <h2>Measure</h2>
+      <div role="group">
+        <button id="b-measure" aria-pressed="false" class="outline" title="M">Measure</button>
+        <button id="b-mclear" class="outline secondary" disabled>Clear</button>
+      </div>
+      <ol class="stats" id="m-list"></ol>
+    </section>
+
+    <section>
       <dl class="stats">
         <div><dt>Sweep</dt><dd id="s-sweep">–</dd></div>
         <div><dt>Depth</dt><dd id="s-wasm">–</dd></div>
@@ -122,8 +137,9 @@
 
   <main class="view">
     <canvas id="gl"></canvas>
+    <div id="labels"></div>
     <div id="empty"><p>The phone sweeps its lens through 40 focus settings. Each pixel's depth is where it looked sharpest, so points appear as the focus moves through the scene.</p></div>
-    <div class="hint">drag to orbit · right-drag to pan · scroll to zoom</div>
+    <div class="hint"><span id="hint-text">drag to orbit · right-drag to pan · scroll to zoom · M to measure</span></div>
   </main>
 </div>
 <script>

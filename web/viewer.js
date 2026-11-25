@@ -44,7 +44,7 @@ function resize() {
 }
 addEventListener("resize", resize);
 resize();
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+renderer.setAnimationLoop(() => { controls.update(); measure.frame(); renderer.render(scene, camera); });
 
 // ---------------------------------------------------------------- capture state
 // Depth runs in a module worker (web/dff-worker.js): frames are decoded off the main thread and
@@ -120,6 +120,7 @@ controls.addEventListener("start", () => { userMoved = true; });
 
 function startLive(orientation) {
   stopLive();
+  measure.clear();
   if (cloud) cloud.visible = false;
   live = { orientation, count: 0 };
 }
@@ -309,7 +310,7 @@ bindRange("r-far", "o-far", (v) => `${v} cm`, () => {});
 bindRange("r-conf", "o-conf", (v) => v.toFixed(2), (v) => { view.conf = v; build(); });
 bindRange("r-edge", "o-edge", (v) => (v > 0 ? `${v.toFixed(1)}%` : "off"), (v) => { view.edge = v / 100; build(); });
 bindRange("r-size", "o-size", (v) => v.toFixed(2), (v) => { view.size = v; if (cloud) cloud.material.size = v; });
-$("c-level").addEventListener("change", (e) => { view.level = e.target.checked; if (capture) capture.framed = false; build(); });
+$("c-level").addEventListener("change", (e) => { view.level = e.target.checked; measure.clear(); if (capture) capture.framed = false; build(); });
 document.querySelectorAll("[data-depth]").forEach((b) => b.addEventListener("click", () => {
   view.depth = b.dataset.depth;
   document.querySelectorAll("[data-depth]").forEach((o) => { o.setAttribute("aria-pressed", o === b); o.classList.toggle("outline", o !== b); });
@@ -381,10 +382,121 @@ $("b-sweep").addEventListener("click", () => {
   ui.status("Sweeping…", "linked");
   link.wire.send({ type: "sweep", params: { n: 40, lo, hi, settle: 0, skip: 0 } });
 });
+// ---------------------------------------------------------------- measuring
+// Click two points on the cloud to measure the straight-line distance between them (metres, in
+// the levelled world frame, so the vertical component is height above/below). Picking is done in
+// screen space: the nearest-to-camera point within a few pixels of the cursor.
+const measure = (() => {
+  const accent = () => (matchMedia("(prefers-color-scheme: dark)").matches ? 0xe6e08a : 0x8a6fd1);
+  const segs = []; // { a, b, line, label }
+  let on = false, first = null, firstDot = null, hover = null, hoverXY = null;
+  const dotMat = () => new THREE.PointsMaterial({ size: 9, sizeAttenuation: false, color: accent(), depthTest: false, transparent: true });
+  const dot = (v) => {
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute([v.x, v.y, v.z], 3));
+    const d = new THREE.Points(g, dotMat()); d.renderOrder = 10; scene.add(d); return d;
+  };
+  hover = dot(new THREE.Vector3()); hover.visible = false; hover.material.opacity = 0.6;
+
+  function activeCloud() {
+    if (live?.points) return { pos: live.pos, n: live.count };
+    if (cloud?.visible) { const a = cloud.geometry.getAttribute("position"); return { pos: a.array, n: a.count }; }
+    return null;
+  }
+
+  function pick(clientX, clientY, radius = 7) {
+    const c = activeCloud(); if (!c) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const px = clientX - rect.left, py = clientY - rect.top, W = rect.width, H = rect.height;
+    camera.updateMatrixWorld();
+    const e = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).elements;
+    const r2 = radius * radius, { pos, n } = c;
+    let best = -1, bestW = Infinity;
+    for (let i = 0; i < n; i++) {
+      const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+      const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+      if (w <= 0 || w >= bestW) continue;
+      const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w * 0.5 + 0.5) * W;
+      const sy = (0.5 - (e[1] * x + e[5] * y + e[9] * z + e[13]) / w * 0.5) * H;
+      const dx = sx - px, dy = sy - py;
+      if (dx * dx + dy * dy <= r2) { best = i; bestW = w; }
+    }
+    return best < 0 ? null : new THREE.Vector3(pos[best * 3], pos[best * 3 + 1], pos[best * 3 + 2]);
+  }
+
+  const fmt = (m) => (m < 1 ? `${(m * 100).toFixed(1)} cm` : `${m.toFixed(3)} m`);
+  function addSeg(a, b) {
+    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+    const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: accent(), depthTest: false, transparent: true }));
+    line.renderOrder = 10; scene.add(line);
+    const label = document.createElement("div"); label.className = "mlabel"; label.textContent = fmt(a.distanceTo(b));
+    $("labels").append(label);
+    segs.push({ a, b, line, label, dots: [dot(a), dot(b)] });
+    list();
+  }
+  function list() {
+    $("m-list").innerHTML = segs.map(({ a, b }) => {
+      const d = b.clone().sub(a), hz = Math.hypot(d.x, d.z);
+      return `<li>${fmt(a.distanceTo(b))} <span>· horiz ${fmt(hz)} · vert ${fmt(Math.abs(d.y))}</span></li>`;
+    }).join("");
+    $("b-mclear").disabled = !segs.length && !first;
+  }
+  function clearFirst() { if (firstDot) { scene.remove(firstDot); firstDot.geometry.dispose(); } first = firstDot = null; }
+  function clear() {
+    clearFirst();
+    for (const s of segs) { scene.remove(s.line, ...s.dots); s.line.geometry.dispose(); s.dots.forEach((d) => d.geometry.dispose()); s.label.remove(); }
+    segs.length = 0; list();
+  }
+  function setOn(v) {
+    on = v; if (!on) { clearFirst(); hover.visible = false; list(); }
+    const b = $("b-measure"); b.setAttribute("aria-pressed", on); b.classList.toggle("outline", !on);
+    document.querySelector("main.view").classList.toggle("measuring", on);
+    $("hint-text").textContent = on ? "click two points to measure · drag still orbits · Esc to stop"
+      : "drag to orbit · right-drag to pan · scroll to zoom · M to measure";
+  }
+  function click(x, y) {
+    const p = pick(x, y); if (!p) return;
+    if (!first) { first = p; firstDot = dot(p); list(); return; }
+    const a = first; clearFirst(); addSeg(a, p);
+  }
+  // Labels follow their segment midpoints; the hover dot snaps to the point under the cursor.
+  const v = new THREE.Vector3();
+  function frame() {
+    const rect = renderer.domElement.getBoundingClientRect();
+    for (const s of segs) {
+      v.copy(s.a).add(s.b).multiplyScalar(0.5).project(camera);
+      const vis = v.z < 1 && Math.abs(v.x) < 1.2 && Math.abs(v.y) < 1.2;
+      s.label.hidden = !vis;
+      if (vis) { s.label.style.left = `${(v.x * 0.5 + 0.5) * rect.width}px`; s.label.style.top = `${(0.5 - v.y * 0.5) * rect.height}px`; }
+    }
+    if (on && hoverXY) {
+      const p = pick(hoverXY[0], hoverXY[1]); hoverXY = null;
+      hover.visible = !!p;
+      if (p) { hover.geometry.getAttribute("position").setXYZ(0, p.x, p.y, p.z); hover.geometry.getAttribute("position").needsUpdate = true; }
+    }
+  }
+
+  const el = renderer.domElement;
+  let down = null;
+  el.addEventListener("pointerdown", (e) => { if (e.button === 0) down = [e.clientX, e.clientY]; });
+  el.addEventListener("pointerup", (e) => {
+    if (on && down && e.button === 0 && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 4) click(e.clientX, e.clientY);
+    down = null;
+  });
+  el.addEventListener("pointermove", (e) => { if (on && e.buttons === 0) hoverXY = [e.clientX, e.clientY]; });
+  el.addEventListener("pointerleave", () => { hover.visible = false; });
+  $("b-measure").addEventListener("click", () => setOn(!on));
+  $("b-mclear").addEventListener("click", clear);
+  addEventListener("keydown", (e) => {
+    if (e.target.closest?.("input, textarea")) return;
+    if (e.key === "m" || e.key === "M") setOn(!on);
+    else if (e.key === "Escape") { if (first) { clearFirst(); list(); } else setOn(false); }
+  });
+  return { clear, frame, get segments() { return segs.map(({ a, b }) => ({ a: a.toArray(), b: b.toArray(), d: a.distanceTo(b) })); }, pick, click, setOn };
+})();
 // Main-thread long tasks (>50 ms), for checking that depth work stays off the page.
 const longTasks = [];
 try { new PerformanceObserver((l) => longTasks.push(...l.getEntries().map((e) => Math.round(e.duration)))).observe({ type: "longtask" }); } catch {}
-window.viewer = { longTasks, sweep: () => $("b-sweep").click(), link, camera, controls, get capture() { return capture; } };
+window.viewer = { longTasks, measure, sweep: () => $("b-sweep").click(), link, camera, controls, get capture() { return capture; } };
 
 const stackId = new URLSearchParams(location.search).get("stack");
 if (stackId) {
