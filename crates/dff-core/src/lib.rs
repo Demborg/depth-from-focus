@@ -756,6 +756,19 @@ impl StackBuilder {
         out
     }
 
+    /// A quick preview without consuming the stack: the volume stage on measures pooled down by
+    /// `levels` more halvings (guided-filter radius scaled to match). Call finish() for full detail.
+    pub fn finish_coarse(&self, diopters: &[f32], levels: usize) -> DepthResult {
+        let down = |v: &[Gray]| -> Vec<Gray> {
+            v.iter().map(|g| (0..levels).fold(g.clone(), |a, _| a.half())).collect()
+        };
+        let mut p = self.p;
+        p.agg_r = (p.agg_r >> levels).max(if p.agg_r > 0 { 1 } else { 0 });
+        p.smooth_r >>= levels;
+        let small = down(&self.small);
+        volume_stage(down(&self.measures), &small, diopters, self.scales.clone(), &p, |v, g| v.iter().map(|m| g.filter(m)).collect())
+    }
+
     pub fn finish(mut self, diopters: &[f32]) -> DepthResult {
         (self.best_v, self.best_k, self.sum, self.decided) = (vec![], vec![], vec![], vec![]);
         let p = self.p;
@@ -796,6 +809,23 @@ pub fn turbo(t: f32) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coarse_preview_matches_fine_layout() {
+        let p = Params { measure_halvings: 1, ..Params::default() };
+        let mut b = StackBuilder::new(p);
+        for k in 0..8 {
+            let mut g = checker(64, 48, 2);
+            if k != 3 { g = blur(&g, 2 + (k as i32 - 3).unsigned_abs() as usize); }
+            b.push(&g);
+        }
+        let d: Vec<f32> = (0..8).map(|k| 1.0 + k as f32).collect();
+        let c = b.finish_coarse(&d, 1);
+        let f = b.finish(&d);
+        assert_eq!((c.w * 2, c.h * 2), (f.w, f.h));
+        let mid = |r: &DepthResult| r.index[(r.h / 2) * r.w + r.w / 2];
+        assert!((mid(&c) - 3.0).abs() < 0.6 && (mid(&f) - 3.0).abs() < 0.6, "{} {}", mid(&c), mid(&f));
+    }
 
     fn checker(w: usize, h: usize, p: usize) -> Gray {
         let mut g = Gray::new(w, h);

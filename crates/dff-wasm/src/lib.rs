@@ -107,6 +107,14 @@ pub extern "C" fn dff_diopters_ptr(ctx: *mut Ctx, n: u32) -> *mut f32 {
     c.diopters.as_mut_ptr()
 }
 
+/// Coarse preview (measures pooled down by `levels`) into the output, keeping the stack so that
+/// dff_finish can still run at full measure resolution.
+#[no_mangle]
+pub extern "C" fn dff_finish_coarse(ctx: *mut Ctx, levels: u32) {
+    let c = unsafe { &mut *ctx };
+    c.out = Some(c.builder.as_ref().unwrap().finish_coarse(&c.diopters, levels as usize));
+}
+
 #[no_mangle]
 pub extern "C" fn dff_finish(ctx: *mut Ctx) {
     let c = unsafe { &mut *ctx };

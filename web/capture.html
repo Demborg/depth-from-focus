@@ -11,7 +11,7 @@
   html, body { height: 100%; overflow: hidden; }
   body { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; grid-template-areas: "nav" "stage" "legend" "bars"; padding-bottom: env(safe-area-inset-bottom); }
   body > nav { grid-area: nav; } .stagebox { grid-area: stage; } #legend { grid-area: legend; } #bars { grid-area: bars; }
-  /* Landscape (when the portrait lock isn't available): view on the left, controls on the right. */
+  /* Landscape: view on the left, controls on the right. */
   @media (orientation: landscape) {
     body { grid-template-columns: minmax(0, 1fr) 15rem; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "stage nav" "stage legend" "stage bars"; padding-bottom: 0; }
     #legend { flex-direction: column; gap: 0.3rem; }

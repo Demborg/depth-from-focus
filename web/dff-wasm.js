@@ -3,8 +3,9 @@ export const PIXEL9_LAG_MS = 271;
 
 // Defaults from tools/compare.py on the flat-mat stack: full-res SML focus measure, per-pixel
 // curve normalisation, guided aggregation of the focus volume, centroid peak, no post-smoothing.
-// halvings=2 gives a 270x480 depth map from 1080x1920 frames.
-export const DEFAULTS = { win: 6, halvings: 2, smoothR: 0, measure: 0, peakR: 6, aggR: 8, aggEps: 1e-3, norm: 1 };
+// halvings=1 gives a 540x960 depth map from 1080x1920 frames; finish(..., coarse) first gives a
+// 270x480 preview from the same stack (aggR is scaled with the resolution).
+export const DEFAULTS = { win: 6, halvings: 1, smoothR: 0, measure: 0, peakR: 6, aggR: 16, aggEps: 1e-3, norm: 1 };
 
 export async function loadDff(url = new URL("./dff.wasm", import.meta.url)) {
   const res = typeof url === "string" || url instanceof URL ? await fetch(url) : url;
@@ -37,20 +38,26 @@ export class Dff {
         return { w: dims >>> 16, h: dims & 0xffff, px: get(0, Uint32Array), index: get(1, Float32Array), conf: get(2, Float32Array) };
       },
       scale(k) { return x.dff_scale(ctx, k); },
-      /** Volume stage with the final (e.g. lag-corrected) per-frame focus values in 1/m. */
-      finish(diopters) {
+      /** Volume stage with the final (e.g. lag-corrected) per-frame focus values in 1/m.
+       *  coarse > 0: a preview pooled down by that many halvings; the stack stays open, so call
+       *  finish() again (coarse = 0) for full detail, which also frees the session. */
+      finish(diopters, coarse = 0) {
         const t0 = performance.now();
+        let done = !coarse;
         try {
           new Float32Array(x.memory.buffer, x.dff_diopters_ptr(ctx, n), n).set(diopters);
-          x.dff_finish(ctx);
+          if (coarse) x.dff_finish_coarse(ctx, coarse); else x.dff_finish(ctx);
           const ow = x.dff_out_w(ctx), oh = x.dff_out_h(ctx), len = ow * oh;
           const view = (k, l = len) => new Float32Array(x.memory.buffer, x.dff_out_ptr(ctx, k), l).slice();
           return {
             w: ow, h: oh, diopter: view(0), diopterSmooth: view(1), conf: view(2), index: view(3),
-            scales: view(4, n), spread: view(5), aif: view(6), pushMs, finishMs: performance.now() - t0,
+            scales: view(4, n), spread: view(5), aif: view(6), pushMs, finishMs: performance.now() - t0, final: !coarse,
           };
+        } catch (e) {
+          done = true;
+          throw e;
         } finally {
-          x.dff_free(ctx);
+          if (done) x.dff_free(ctx);
         }
       },
     };

@@ -64,14 +64,24 @@ function urlOpts() {
 }
 
 function newIngest({ lag = true, orientation = null } = {}) {
-  let chain = Promise.resolve(), pushed = 0, workMs = 0, lastPush = 0;
+  let chain = Promise.resolve(), pushed = 0, workMs = 0, lastPush = 0, first = null, tFinish = 0;
+  const refine = (m) => {
+    if (!capture) return;
+    capture = { ...capture, result: m.result, colors: m.colours, framed: true };
+    build();
+    $("s-wasm").textContent = `+${((performance.now() - tFinish) / 1000).toFixed(2)} s · ${m.result.w}x${m.result.h}`;
+    ui.log(`refined to ${m.result.w}x${m.result.h} (${(m.result.finishMs / 1000).toFixed(2)} s)`);
+  };
   worker.postMessage({ type: "begin", opts: urlOpts(), lag });
   startLive(orientation);
   const progress = new Promise((res) => {
     onWorker = (m) => {
       if (m.type === "points") addLivePoints(m);
       if (m.type === "pushed") { pushed = m.n; workMs += m.ms; lastPush = performance.now(); $("s-wasm").textContent = `frame ${m.n} · ${(live?.count ?? 0).toLocaleString()} points so far`; }
-      if (m.type === "result") res(m);
+      if (m.type === "result") {
+        if (!first) { first = m; res(m); } // coarse preview (or the only result)
+        else refine(m); // full detail replacing it
+      }
       if (m.type === "error") ui.log("worker:", m.message);
     };
   });
@@ -89,8 +99,9 @@ function newIngest({ lag = true, orientation = null } = {}) {
       await chain;
       const t = meta.frames.every((f) => f.t_req_ms != null) && meta.params?.settle === 0;
       const dio = t ? laggedDiopters(meta.frames) : meta.frames.map((f) => 1 / f.focus_requested);
-      const tFinish = performance.now();
-      worker.postMessage({ type: "finish", diopters: dio });
+      tFinish = performance.now();
+      // No coarse preview here: the live points already cover the wait, and it would delay full detail.
+      worker.postMessage({ type: "finish", diopters: dio, coarse: 0 });
       const m = await progress;
       const waited = performance.now() - tFinish;
       const liveCount = live?.count ?? 0;
@@ -245,13 +256,14 @@ function build() {
   cloud = new THREE.Points(g, mat);
   scene.add(cloud);
   $("s-pts").textContent = k.toLocaleString();
-  const sorted = zs.subarray(0, k).slice().sort();
+  // Percentiles from every 16th point: plenty for a range readout, and cheap at 540x960.
+  const sample = (get) => { const a = new Float32Array(Math.ceil(k / 16)); for (let i = 0, j = 0; i < k; i += 16) a[j++] = get(i); return a.sort(); };
+  const sorted = sample((i) => zs[i]);
   const q = (t) => sorted[Math.floor(t * (sorted.length - 1))] ?? 0;
   $("s-range").textContent = sorted.length ? `${(q(0.02) * 100).toFixed(0)}–${(q(0.98) * 100).toFixed(0)} cm` : "–";
 
   // Horizontal grid at the lowest dense level (the table when levelled), and the phone itself.
-  const ys = new Float32Array(k); for (let i = 0; i < k; i++) ys[i] = pos[i * 3 + 1];
-  ys.sort();
+  const ys = sample((i) => pos[i * 3 + 1]);
   const floor = ys[Math.floor(0.03 * (ys.length - 1))] ?? -0.3;
   if (grid) scene.remove(grid);
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;

@@ -45,6 +45,7 @@ export function createPhone3D(stage, orientation) {
       camera.fov = (2 * Math.atan(halfH / img.f) * 180) / Math.PI;
     }
     camera.updateProjectionMatrix();
+    material.size = splatSize();
   }
   addEventListener("resize", () => { if (!canvas.hidden) resize(); });
 
@@ -98,47 +99,67 @@ export function createPhone3D(stage, orientation) {
   // Touching the view hands the camera over to touch orbiting from wherever tilt left it.
   canvas.addEventListener("pointerdown", () => { if (tilt) setTilt(false); });
 
+  // Points are splats sized to their pixel's footprint on the surface (z / f), so they tile at the
+  // capture pose at any resolution and keep their physical size as you zoom or orbit. three's
+  // size attenuation gives size * psize * (H/2) / depth, hence size = 1 / tan(fov / 2).
+  const splatSize = () => 1 / Math.tan((camera.fov * Math.PI) / 360);
+  const material = new THREE.PointsMaterial({ size: 1, sizeAttenuation: true, vertexColors: true });
+  material.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace("uniform float size;", "uniform float size;\nattribute float psize;")
+      .replace("gl_PointSize = size;", "gl_PointSize = size * psize;");
+  };
+
+  function build(r, colours, depth) {
+    const d = depth === "smooth" ? r.diopterSmooth : r.diopter;
+    const f = focalPx(r.w, r.h), cx = r.w / 2, cy = r.h / 2, n = r.w * r.h;
+    const Z = new Float32Array(n);
+    for (let p = 0; p < n; p++) Z[p] = 1 / Math.max(1e-3, d[p]);
+    const flying = discontinuities(Z, r.w, r.h, EDGE);
+    const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), ps = new Float32Array(n), zs = [];
+    let k = 0;
+    for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
+      const p = y * r.w + x;
+      if (r.conf[p] < CONF || !(d[p] > 0.2) || flying[p] || Z[p] > 6) continue;
+      const z = Z[p], o = k * 3;
+      // Camera frame (x right, y down, z forward) to three.js (x right, y up, z backward).
+      pos[o] = ((x + 0.5 - cx) / f) * z; pos[o + 1] = -((y + 0.5 - cy) / f) * z; pos[o + 2] = -z;
+      col[o] = colours[p * 3] / 255; col[o + 1] = colours[p * 3 + 1] / 255; col[o + 2] = colours[p * 3 + 2] / 255;
+      ps[k] = (1.2 * z) / f; // a little over one pixel's footprint, so neighbours overlap
+      if ((k & 15) === 0) zs.push(z);
+      k++;
+    }
+    if (cloud) { scene.remove(cloud); cloud.geometry.dispose(); }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos.subarray(0, k * 3), 3));
+    g.setAttribute("color", new THREE.BufferAttribute(col.subarray(0, k * 3), 3));
+    g.setAttribute("psize", new THREE.BufferAttribute(ps.subarray(0, k), 1));
+    img = { w: r.w, h: r.h, f };
+    canvas.hidden = false;
+    resize();
+    cloud = new THREE.Points(g, material);
+    scene.add(cloud);
+    return { k, zs };
+  }
+
   return {
     get tilt() { return tilt; },
     set onTilt(fn) { onTilt = fn; },
     setTilt,
-    /** result/colours from dff-worker.js. Builds the cloud in the camera frame and shows it. */
+    /** result/colours from dff-worker.js: builds the cloud in the camera frame and shows it
+     *  from the capture pose. */
     show(r, colours, { depth = "smooth", screenAngle = 0 } = {}) {
       toImage.setFromAxisAngle(zAxis, (screenAngle * Math.PI) / 180);
-      const d = depth === "smooth" ? r.diopterSmooth : r.diopter;
-      const f = focalPx(r.w, r.h), cx = r.w / 2, cy = r.h / 2, n = r.w * r.h;
-      const Z = new Float32Array(n);
-      for (let p = 0; p < n; p++) Z[p] = 1 / Math.max(1e-3, d[p]);
-      const flying = discontinuities(Z, r.w, r.h, EDGE);
-      const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), zs = [];
-      let k = 0;
-      for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
-        const p = y * r.w + x;
-        if (r.conf[p] < CONF || !(d[p] > 0.2) || flying[p] || Z[p] > 6) continue;
-        const z = Z[p], o = k * 3;
-        // Camera frame (x right, y down, z forward) to three.js (x right, y up, z backward).
-        pos[o] = ((x + 0.5 - cx) / f) * z; pos[o + 1] = -((y + 0.5 - cy) / f) * z; pos[o + 2] = -z;
-        col[o] = colours[p * 3] / 255; col[o + 1] = colours[p * 3 + 1] / 255; col[o + 2] = colours[p * 3 + 2] / 255;
-        if ((k & 15) === 0) zs.push(z);
-        k++;
-      }
-      if (cloud) { scene.remove(cloud); cloud.geometry.dispose(); }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.BufferAttribute(pos.subarray(0, k * 3), 3));
-      g.setAttribute("color", new THREE.BufferAttribute(col.subarray(0, k * 3), 3));
-      img = { w: r.w, h: r.h, f };
-      canvas.hidden = false;
-      resize();
-      // Point size in device pixels so neighbouring depth pixels just touch at the capture pose.
-      const fit = Math.min(renderer.domElement.width / r.w, renderer.domElement.height / r.h);
-      const size = Math.ceil(fit) + 1;
-      cloud = new THREE.Points(g, new THREE.PointsMaterial({ size, sizeAttenuation: false, vertexColors: true }));
-      scene.add(cloud);
+      const { k, zs } = build(r, colours, depth);
       zs.sort((a, b) => a - b);
       target.set(0, 0, -(zs[zs.length >> 1] ?? 0.5));
       home();
       setTilt(!!orientation.q);
       return { points: k };
+    },
+    /** Swap in a refined result for the same capture, keeping the current view. */
+    update(r, colours, { depth = "smooth" } = {}) {
+      return { points: build(r, colours, depth).k };
     },
     hide() { canvas.hidden = true; tilt = false; controls.enabled = false; },
     get visible() { return !canvas.hidden; },

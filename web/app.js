@@ -38,18 +38,6 @@ function fitStage() {
 }
 screen.orientation?.addEventListener("change", () => setTimeout(fitStage, 300));
 
-// Keep the page in portrait: Chrome on Android only allows the lock in fullscreen, and both need
-// a user gesture, so try on the first tap. Without it the landscape layout takes over.
-async function lockPortrait() {
-  try {
-    if (!document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: "hide" });
-    await screen.orientation.lock("portrait");
-    log("locked to portrait");
-  } catch (e) {
-    log("orientation lock unavailable:", e.name);
-  }
-}
-addEventListener("click", lockPortrait, { once: true });
 
 async function start({ width = 1920, height = 1080 } = {}) {
   if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
@@ -220,14 +208,14 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
   highlight?.done();
   log("sweep done", id, `${metaObj.total_ms.toFixed(0)} ms`);
   status("computing depth…");
-  local.finish(metaObj).then((r) => showResult(r, metaObj)).catch((e) => log("depth failed", String(e)));
+  local.finish(metaObj, refineResult).then((r) => showResult(r, metaObj)).catch((e) => log("depth failed", String(e)));
   return { id, total_ms: metaObj.total_ms };
 }
 
 // On-device depth: the same wasm worker as the desktop viewer, fed each sweep frame as it is
 // grabbed, so the per-frame work overlaps the sweep and the phone can show the result in 3D.
 const localDepth = (() => {
-  let worker = null, onMsg = () => {};
+  let worker = null, onMsg = () => {}, seq = 0;
   const get = () => {
     if (!worker) {
       worker = new Worker(new URL("./dff-worker.js", import.meta.url), { type: "module" });
@@ -239,19 +227,24 @@ const localDepth = (() => {
   return {
     begin() {
       const w = get();
-      let pushMs = 0;
+      let pushMs = 0, first = true, onRefine = () => {};
+      const mySeq = ++seq;
       w.postMessage({ type: "begin", opts: {}, lag: true });
+      // The worker posts a coarse preview first, then the full-detail result.
       const result = new Promise((res, rej) => {
         onMsg = (m) => {
           if (m.type === "pushed") pushMs += m.ms;
-          if (m.type === "result") res({ ...m, pushMs });
+          if (m.type === "result" && m.seq === mySeq) {
+            if (first) { first = false; res({ ...m, pushMs }); } else onRefine(m);
+          }
           if (m.type === "error") rej(new Error(m.message));
         };
       });
       return {
         frame(i, bitmap, meta) { w.postMessage({ type: "frame", i, bitmap, meta }, [bitmap]); },
         // Lens-lag relabelling only for continuous (settle = 0) sweeps, as in the viewer.
-        async finish(meta) {
+        async finish(meta, refine) {
+          if (refine) onRefine = refine;
           const lag = meta.params.settle === 0 && meta.frames.every((f) => f.t_req_ms != null);
           const t = performance.now();
           w.postMessage({ type: "finish", diopters: lag ? laggedDiopters(meta.frames) : meta.frames.map((f) => 1 / f.focus_requested) });
@@ -273,6 +266,13 @@ function showResult({ result, colours }, meta) {
   document.getElementById("bar3d").hidden = false;
   document.getElementById("bar").hidden = true;
   log(`3D view: ${points.toLocaleString()} points`);
+  status(`${Math.round(points / 1000)}k points · refining…`);
+}
+// Full-detail result after the preview: swap the points in place, keeping the current view.
+function refineResult({ result, colours }) {
+  if (!view3d.visible) return;
+  const { points } = view3d.update(result, colours);
+  log(`refined: ${result.w}x${result.h}, ${points.toLocaleString()} points (${(result.finishMs / 1000).toFixed(1)} s)`);
   status(`${Math.round(points / 1000)}k points`);
 }
 function showCamera() {
@@ -302,7 +302,7 @@ async function replay(id) {
     const bitmap = await createImageBitmap(await fetch(`stacks/${id}/${f.file}`).then((r) => r.blob()));
     local.frame(i, bitmap, f);
   }
-  showResult(await local.finish(meta), meta);
+  showResult(await local.finish(meta, refineResult), meta);
 }
 document.getElementById("b-tilt").onclick = () => view3d.setTilt(!view3d.tilt);
 

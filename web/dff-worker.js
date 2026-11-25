@@ -3,14 +3,17 @@
 //
 // in:  { type: "begin", opts, lag }                 start a capture (lag: apply lens-lag relabelling)
 //      { type: "frame", i, bitmap, meta }           ImageBitmap (transferred) + per-frame metadata
-//      { type: "finish", diopters }
+//      { type: "finish", diopters }                 posts a quick coarse result, then the full one
 // out: { type: "pushed", n, ms }                    per frame
 //      { type: "points", w, h, px, z, rgb }         newly decided pixels while the sweep runs
-//      { type: "result", result, colours }          Float32 arrays + Uint8 RGB per depth pixel
+//      { type: "result", result, colours }          Float32 arrays + Uint8 RGB per depth pixel;
+//                                                   result.final is false for the coarse preview;
+//                                                   seq counts begins, to drop stale results
 //      { type: "error", message }
 import { loadDff, laggedDiopters } from "./dff-wasm.js";
 
 const ready = loadDff();
+let seq = 0; // capture number (counted begins), echoed on results
 let session = null, opts = {}, lag = false, metas = [], colours = [], queue = Promise.resolve(), cw = 540, ch = 960;
 
 // Early points: a pixel is sent once its focus peak is >= R frames behind the sweep and its
@@ -65,7 +68,7 @@ function allInFocus(r) {
 const step = (fn) => { queue = queue.then(fn).catch((e) => postMessage({ type: "error", message: String(e?.stack ?? e) })); };
 
 onmessage = ({ data: m }) => {
-  if (m.type === "begin") step(async () => { await ready; session = null; colours = []; metas = []; opts = m.opts ?? {}; lag = !!m.lag; });
+  if (m.type === "begin") step(async () => { await ready; seq++; session = null; colours = []; metas = []; opts = m.opts ?? {}; lag = !!m.lag; });
   if (m.type === "frame") step(async () => {
     const dff = await ready;
     const t = performance.now();
@@ -78,11 +81,15 @@ onmessage = ({ data: m }) => {
     postMessage({ type: "pushed", n, ms: performance.now() - t });
   });
   if (m.type === "finish") step(async () => {
-    const r = session.finish(m.diopters);
+    const post = (r) => {
+      const c = allInFocus(r);
+      const bufs = [r.diopter, r.diopterSmooth, r.conf, r.index, r.scales, r.spread, r.aif].map((a) => a.buffer);
+      postMessage({ type: "result", seq, result: r, colours: c }, [...bufs, c.buffer]);
+    };
+    // Progressive: a preview from the same stack pooled to half resolution, then full detail.
+    if ((opts.halvings ?? 1) < 2 && m.coarse !== 0) post(session.finish(m.diopters, 1));
+    post(session.finish(m.diopters));
     session = null;
-    const c = allInFocus(r);
     colours = []; metas = [];
-    const bufs = [r.diopter, r.diopterSmooth, r.conf, r.index, r.scales, r.spread, r.aif].map((a) => a.buffer);
-    postMessage({ type: "result", result: r, colours: c }, [...bufs, c.buffer]);
   });
 };
