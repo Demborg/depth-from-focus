@@ -37,7 +37,6 @@
   #stage.in3d video, #stage.in3d #hl { visibility: hidden; }
   .view3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   .hint3d { position: absolute; z-index: 1; left: 0.6rem; bottom: 0.5rem; font-size: 0.7rem; color: #ccc; pointer-events: none; text-shadow: 0 0 3px #000; }
-  .timing { position: absolute; z-index: 1; left: 0.5rem; top: 0.4rem; margin: 0; padding: 0.3rem 0.5rem; font-size: 0.65rem; line-height: 1.35; color: #ddd; background: rgba(0,0,0,0.55); pointer-events: none; }
   /* Log: only with ?debug, as an overlay so it never pushes the buttons off screen. */
   pre#out { position: fixed; left: 0.5rem; right: 0.5rem; top: 3rem; z-index: 2; margin: 0; padding: 0.4rem 0.6rem; font-size: 0.65rem; max-height: 30vh; overflow: auto; white-space: pre-wrap; opacity: 0.85; pointer-events: none; }
 </style>
@@ -54,7 +53,7 @@
   <ul><li><strong>Depth from focus</strong></li></ul>
   <ul><li><span class="status" id="status"></span></li><li><a class="ai-badge" href="https://0rwx.com" target="_blank" rel="noopener" title="AI:X · AI made" aria-label="AI usage AI:X, AI made" data-svg="img/ai-x.svg"></a></li></ul>
 </nav>
-<div class="stagebox"><div id="stage"><video id="v" playsinline muted autoplay></video><canvas id="hl" width="270" height="480"></canvas><div class="hint3d" id="hint3d" hidden></div><pre class="timing" id="timing" hidden></pre></div></div>
+<div class="stagebox"><div id="stage"><video id="v" playsinline muted autoplay></video><canvas id="hl" width="270" height="480"></canvas><div class="hint3d" id="hint3d" hidden></div></div></div>
 <div class="legend" id="legend"><span><i style="background:#3cff78"></i>in focus now</span><span><i style="background:#28bec8;opacity:.5"></i>captured</span></div>
 <div id="bars">
 <div class="bar" id="bar">

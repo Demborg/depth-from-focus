@@ -235,13 +235,13 @@ const localDepth = (() => {
   return {
     begin() {
       const w = get();
-      let pushMs = 0, maxMs = 0, frames = 0;
+      let pushMs = 0;
       const mySeq = ++seq;
       w.postMessage({ type: "begin", opts: urlOpts(), lag: true });
       const result = new Promise((res, rej) => {
         onMsg = (m) => {
-          if (m.type === "pushed") { pushMs += m.ms; maxMs = Math.max(maxMs, m.ms); frames++; }
-          if (m.type === "result" && m.seq === mySeq) res({ ...m, pushMs, maxMs, frames });
+          if (m.type === "pushed") pushMs += m.ms;
+          if (m.type === "result" && m.seq === mySeq) res({ ...m, pushMs });
           if (m.type === "error") rej(new Error(m.message));
         };
       });
@@ -253,7 +253,6 @@ const localDepth = (() => {
           const t = performance.now();
           w.postMessage({ type: "finish", diopters: lag ? laggedDiopters(meta.frames) : meta.frames.map((f) => 1 / f.focus_requested) });
           const r = await result;
-          r.waitMs = performance.now() - t;
           log(`depth ${r.result.w}x${r.result.h}: ${(r.pushMs / 1000).toFixed(1)} s per-frame work, +${((performance.now() - t) / 1000).toFixed(2)} s after the sweep`);
           return r;
         },
@@ -264,8 +263,7 @@ const localDepth = (() => {
 
 const stage = document.getElementById("stage");
 const view3d = createPhone3D(stage, { get q() { return orientation.q; } });
-function showResult({ result, colours, ...r }, meta) {
-  const t = performance.now();
+function showResult({ result, colours }, meta) {
   const { points } = view3d.show(result, colours, { screenAngle: meta?.frames?.[0]?.orientation?.angle ?? 0 });
   stage.classList.add("in3d");
   document.getElementById("legend").hidden = true;
@@ -273,15 +271,6 @@ function showResult({ result, colours, ...r }, meta) {
   document.getElementById("bar").hidden = true;
   log(`3D view: ${points.toLocaleString()} points`);
   status(`${Math.round(points / 1000)}k points`);
-  // Temporary: timings to report back while tuning the GPU pipeline on the phone.
-  const tm = document.getElementById("timing");
-  tm.hidden = false;
-  tm.textContent = [
-    `${result.w}x${result.h} · ${r.frames} frames · sweep ${((meta?.total_ms ?? 0) / 1000).toFixed(1)} s`,
-    `per frame ${(r.pushMs / r.frames).toFixed(0)} ms avg, ${r.maxMs.toFixed(0)} max`,
-    `after sweep +${(r.waitMs / 1000).toFixed(2)} s (final pass ${(result.finishMs / 1000).toFixed(2)} s)`,
-    `cloud build ${((performance.now() - t) / 1000).toFixed(2)} s · ${points.toLocaleString()} points`,
-  ].join("\n");
 }
 function showCamera() {
   setTimeout(fitStage);
@@ -292,7 +281,6 @@ function showCamera() {
   document.getElementById("bar3d").hidden = true;
   document.getElementById("bar").hidden = false;
   document.getElementById("hint3d").hidden = true;
-  document.getElementById("timing").hidden = true;
 }
 view3d.onTilt = (on) => {
   const b = document.getElementById("b-tilt");
