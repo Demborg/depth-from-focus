@@ -2,8 +2,12 @@
 // driven remotely over Chrome DevTools Protocol (tools/cdp.mjs) as well as by buttons.
 import { CameraLink } from "./net/link.js";
 import { pairFromUrl } from "./net/signal.js";
+import { laggedDiopters } from "./dff-wasm.js";
+import { createPhone3D } from "./phone3d.js";
 
 const out = document.getElementById("out");
+if (new URLSearchParams(location.search).has("debug")) out.hidden = false;
+const status = (t) => { document.getElementById("status").textContent = t; };
 const video = document.getElementById("v");
 const state = { stream: null, track: null };
 
@@ -37,6 +41,7 @@ async function start({ width = 1920, height = 1080 } = {}) {
   await nextFrame();
   const info = caps();
   log("camera started", info.settings.width + "x" + info.settings.height);
+  status("ready");
   remoteLog({ kind: "caps", ...info });
   return info;
 }
@@ -141,7 +146,9 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
   hi ??= c.focusDistance.max;
   id ??= new Date().toISOString().replace(/[:.]/g, "-");
   sink ??= serverSink(id);
+  view3d.hide();
   const highlight = document.getElementById("hl") ? makeHighlighter(document.getElementById("hl")) : null;
+  const local = localDepth.begin();
   const locked = lock ? await lockAuto() : null;
   const s0 = state.track.getSettings();
   const canvas = new OffscreenCanvas(s0.width, s0.height);
@@ -163,6 +170,7 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
     for (let k = 0; k <= skip; k++) meta = await nextFrame();
     const blob = await grab(canvas, quality);
     highlight?.frame(canvas);
+    const bitmapP = createImageBitmap(canvas);
     const st = state.track.getSettings();
     frames.push({
       file: `${String(i).padStart(3, "0")}.jpg`,
@@ -175,7 +183,9 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
       media_time: meta?.mediaTime,
     });
     uploads.push(sink.frame(i, blob, frames[i]));
+    local.frame(i, await bitmapP, frames[i]);
     onProgress?.(i + 1, n);
+    status(`sweeping ${i + 1}/${n}`);
     log(`frame ${i + 1}/${n} req=${req.toFixed(3)} rep=${st.focusDistance}`);
   }
   await Promise.all(uploads);
@@ -184,10 +194,93 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
     total_ms: performance.now() - t0, locked, caps: caps(), frames, orientation: orientation.snapshot(),
   };
   await sink.meta(metaObj);
-  setTimeout(() => highlight?.done(), 600);
+  highlight?.done();
   log("sweep done", id, `${metaObj.total_ms.toFixed(0)} ms`);
+  status("computing depth…");
+  local.finish(metaObj).then(showResult).catch((e) => log("depth failed", String(e)));
   return { id, total_ms: metaObj.total_ms };
 }
+
+// On-device depth: the same wasm worker as the desktop viewer, fed each sweep frame as it is
+// grabbed, so the per-frame work overlaps the sweep and the phone can show the result in 3D.
+const localDepth = (() => {
+  let worker = null, onMsg = () => {};
+  const get = () => {
+    if (!worker) {
+      worker = new Worker(new URL("./dff-worker.js", import.meta.url), { type: "module" });
+      worker.onmessage = ({ data }) => onMsg(data);
+      worker.onerror = (e) => log("worker error:", e.message);
+    }
+    return worker;
+  };
+  return {
+    begin() {
+      const w = get();
+      let pushMs = 0;
+      w.postMessage({ type: "begin", opts: {}, lag: true });
+      const result = new Promise((res, rej) => {
+        onMsg = (m) => {
+          if (m.type === "pushed") pushMs += m.ms;
+          if (m.type === "result") res({ ...m, pushMs });
+          if (m.type === "error") rej(new Error(m.message));
+        };
+      });
+      return {
+        frame(i, bitmap, meta) { w.postMessage({ type: "frame", i, bitmap, meta }, [bitmap]); },
+        // Lens-lag relabelling only for continuous (settle = 0) sweeps, as in the viewer.
+        async finish(meta) {
+          const lag = meta.params.settle === 0 && meta.frames.every((f) => f.t_req_ms != null);
+          const t = performance.now();
+          w.postMessage({ type: "finish", diopters: lag ? laggedDiopters(meta.frames) : meta.frames.map((f) => 1 / f.focus_requested) });
+          const r = await result;
+          log(`depth ${r.result.w}x${r.result.h}: ${(r.pushMs / 1000).toFixed(1)} s per-frame work, +${((performance.now() - t) / 1000).toFixed(2)} s after the sweep`);
+          return r;
+        },
+      };
+    },
+  };
+})();
+
+const stage = document.getElementById("stage");
+const view3d = createPhone3D(stage, { get q() { return orientation.q; } });
+function showResult({ result, colours }) {
+  const { points } = view3d.show(result, colours);
+  stage.classList.add("in3d");
+  document.getElementById("legend").hidden = true;
+  document.getElementById("bar3d").hidden = false;
+  document.getElementById("bar").hidden = true;
+  log(`3D view: ${points.toLocaleString()} points`);
+  status(`${Math.round(points / 1000)}k points`);
+}
+function showCamera() {
+  status("ready");
+  view3d.hide();
+  stage.classList.remove("in3d");
+  document.getElementById("legend").hidden = false;
+  document.getElementById("bar3d").hidden = true;
+  document.getElementById("bar").hidden = false;
+  document.getElementById("hint3d").hidden = true;
+}
+view3d.onTilt = (on) => {
+  const b = document.getElementById("b-tilt");
+  b.setAttribute("aria-pressed", on); b.classList.toggle("outline", !on);
+  const h = document.getElementById("hint3d");
+  h.hidden = false;
+  h.textContent = on ? "tilt the phone to look around · touch to drag" : "drag to orbit · pinch to zoom · Tilt to reset";
+};
+document.getElementById("b-camera").onclick = showCamera;
+
+// Dev: run a stored stack (dev server /stacks/<id>) through the on-device depth and 3D view.
+async function replay(id) {
+  const meta = await fetch(`stacks/${id}/meta.json`).then((r) => r.json());
+  const local = localDepth.begin();
+  for (const [i, f] of meta.frames.entries()) {
+    const bitmap = await createImageBitmap(await fetch(`stacks/${id}/${f.file}`).then((r) => r.blob()));
+    local.frame(i, bitmap, f);
+  }
+  showResult(await local.finish(meta));
+}
+document.getElementById("b-tilt").onclick = () => view3d.setTilt(!view3d.tilt);
 
 // Probe lens settling: jump between two focus values and record per-frame sharpness of a
 // center crop, so we can see how many frames/ms the lens needs to settle.
@@ -295,10 +388,11 @@ async function startPaired(pairing) {
   window.dffLink = link;
 }
 
-window.dff = { start, caps, lockAuto, setFocus, sweep, settleProbe, log, orientation };
+window.dff = { start, caps, lockAuto, setFocus, sweep, settleProbe, log, orientation, view3d, showCamera, replay };
 const pairing = pairFromUrl(location.href);
 if (pairing) startPaired(pairing).catch((e) => log("ERR", String(e)));
 document.getElementById("start").onclick = () => start().catch((e) => log("ERR", String(e)));
-document.getElementById("sweep").onclick = () => sweep().catch((e) => log("ERR", String(e)));
+// The same fast continuous sweep the viewer asks for (lens lag is corrected afterwards).
+document.getElementById("sweep").onclick = () => sweep({ n: 40, lo: 0.25, hi: 1.6, settle: 0, skip: 0 }).catch((e) => log("ERR", String(e)));
 window.addEventListener("error", (e) => remoteLog({ kind: "error", msg: String(e.message) }));
 remoteLog({ kind: "loaded", ua: navigator.userAgent });

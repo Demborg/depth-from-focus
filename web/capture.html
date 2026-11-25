@@ -7,32 +7,55 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.0.6/css/pico.min.css">
 <link rel="stylesheet" href="site.css">
 <style>
-  body { padding-bottom: env(safe-area-inset-bottom); }
+  /* One screen, no scrolling: nav, the stage (as large as fits), legend and buttons. */
+  html, body { height: 100%; overflow: hidden; }
+  body { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; padding-bottom: env(safe-area-inset-bottom); }
   nav.container-fluid { margin-bottom: 0; }
-  #stage { position: relative; background: #000; }
-  video { width: 100%; display: block; }
+  nav li { padding-block: 0.35rem; }
+  .status { font-size: 0.8rem; color: var(--pico-muted-color); }
+  .stagebox { container-type: size; display: grid; place-items: center; min-height: 0; background: #000; }
+  /* The stream's 9:16 aspect, so the 3D view's field of view matches the preview exactly. */
+  #stage { position: relative; background: #000; aspect-ratio: 9 / 16; width: min(100cqw, 100cqh * 9 / 16); }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
   /* In-focus highlight, drawn at 270x480 and stretched over the video. */
   #hl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; transition: opacity 1.2s; }
-  .bar { display: flex; gap: 0.5rem; padding: 0.75rem var(--pico-spacing) 0; }
+  .bar { display: flex; gap: 0.5rem; padding: 0.5rem var(--pico-spacing) 0.75rem; }
   .bar button { flex: 1; margin: 0; }
-  .legend { display: flex; gap: 1rem; padding: 0.5rem var(--pico-spacing) 0; font-size: 0.75rem; color: var(--pico-muted-color); }
+  .legend { display: flex; gap: 1rem; padding: 0.4rem var(--pico-spacing) 0; font-size: 0.75rem; color: var(--pico-muted-color); }
   .legend i { display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.35em; vertical-align: -0.05em; }
-  pre#out { margin: 0.75rem var(--pico-spacing); padding: 0.5rem 0.75rem; font-size: 0.7rem; max-height: 30vh; overflow: auto; white-space: pre-wrap; }
+  /* 3D view of the last capture, in place of the preview (the video keeps the stage's size). */
+  #stage.in3d video, #stage.in3d #hl { visibility: hidden; }
+  .view3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .hint3d { position: absolute; z-index: 1; left: 0.6rem; bottom: 0.5rem; font-size: 0.7rem; color: #ccc; pointer-events: none; text-shadow: 0 0 3px #000; }
+  /* Log: only with ?debug, as an overlay so it never pushes the buttons off screen. */
+  pre#out { position: fixed; left: 0.5rem; right: 0.5rem; top: 3rem; z-index: 2; margin: 0; padding: 0.4rem 0.6rem; font-size: 0.65rem; max-height: 30vh; overflow: auto; white-space: pre-wrap; opacity: 0.85; pointer-events: none; }
 </style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
 <script>if (new URLSearchParams(location.search).has("trace")) document.write('<script src="debug/rtc-trace.js"><\/script>');</script>
 </head>
 <body>
 <nav class="container-fluid">
   <ul><li><strong>Depth from focus</strong></li></ul>
-  <ul><li><a class="ai-badge" href="https://0rwx.com" target="_blank" rel="noopener" title="AI:X · AI made" aria-label="AI usage AI:X, AI made" data-svg="img/ai-x.svg"></a></li></ul>
+  <ul><li><span class="status" id="status"></span></li><li><a class="ai-badge" href="https://0rwx.com" target="_blank" rel="noopener" title="AI:X · AI made" aria-label="AI usage AI:X, AI made" data-svg="img/ai-x.svg"></a></li></ul>
 </nav>
-<div id="stage"><video id="v" playsinline muted autoplay></video><canvas id="hl" width="270" height="480"></canvas></div>
-<div class="legend"><span><i style="background:#3cff78"></i>in focus now</span><span><i style="background:#28bec8;opacity:.5"></i>captured</span></div>
-<div class="bar">
+<div class="stagebox"><div id="stage"><video id="v" playsinline muted autoplay></video><canvas id="hl" width="270" height="480"></canvas><div class="hint3d" id="hint3d" hidden></div></div></div>
+<div class="legend" id="legend"><span><i style="background:#3cff78"></i>in focus now</span><span><i style="background:#28bec8;opacity:.5"></i>captured</span></div>
+<div>
+<div class="bar" id="bar">
   <button id="start" class="outline">Start camera</button>
   <button id="sweep">Sweep</button>
 </div>
-<pre id="out"></pre>
+<div class="bar" id="bar3d" hidden>
+  <button id="b-camera" class="outline">Camera</button>
+  <button id="b-tilt" class="outline" aria-pressed="false">Tilt</button>
+</div>
+</div>
+<pre id="out" hidden></pre>
 <script>
   for (const a of document.querySelectorAll("[data-svg]")) fetch(a.dataset.svg).then((r) => r.text()).then((t) => { a.innerHTML = `<span class="icon">${t}</span>`; });
 </script>
