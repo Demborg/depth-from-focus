@@ -3,6 +3,8 @@
 // Pixel 9 main camera, 1080x1920 preview stream. Calibrated from the cutting mat's 1 cm grid
 // (tools/calib_fov.py): f = 890 px at 540x960, i.e. ~57 deg across the long side.
 export const F_LONG_PX = 1780;
+/** Focal length in pixels for a w x h image of that stream, in either orientation. */
+export const focalPx = (w, h) => F_LONG_PX * (Math.max(w, h) / 1920);
 
 // Flying pixels: drop points whose 3x3 neighbourhood spans more than `rel` of their depth.
 // Separable 3x3 min/max on depth (computed once), so it is a few linear passes.

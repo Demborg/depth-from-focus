@@ -29,6 +29,28 @@ function nextFrame() {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The highlight canvas follows the stream's aspect (it turns with the screen).
+function fitStage() {
+  const s = state.track?.getSettings();
+  if (!s?.width) return;
+  const hl = document.getElementById("hl"), long = 480, short = 270;
+  [hl.width, hl.height] = s.width > s.height ? [long, short] : [short, long];
+}
+screen.orientation?.addEventListener("change", () => setTimeout(fitStage, 300));
+
+// Keep the page in portrait: Chrome on Android only allows the lock in fullscreen, and both need
+// a user gesture, so try on the first tap. Without it the landscape layout takes over.
+async function lockPortrait() {
+  try {
+    if (!document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+    await screen.orientation.lock("portrait");
+    log("locked to portrait");
+  } catch (e) {
+    log("orientation lock unavailable:", e.name);
+  }
+}
+addEventListener("click", lockPortrait, { once: true });
+
 async function start({ width = 1920, height = 1080 } = {}) {
   if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
   state.stream = await navigator.mediaDevices.getUserMedia({
@@ -41,6 +63,7 @@ async function start({ width = 1920, height = 1080 } = {}) {
   await nextFrame();
   const info = caps();
   log("camera started", info.settings.width + "x" + info.settings.height);
+  fitStage();
   status("ready");
   remoteLog({ kind: "caps", ...info });
   return info;
@@ -197,7 +220,7 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
   highlight?.done();
   log("sweep done", id, `${metaObj.total_ms.toFixed(0)} ms`);
   status("computing depth…");
-  local.finish(metaObj).then(showResult).catch((e) => log("depth failed", String(e)));
+  local.finish(metaObj).then((r) => showResult(r, metaObj)).catch((e) => log("depth failed", String(e)));
   return { id, total_ms: metaObj.total_ms };
 }
 
@@ -243,8 +266,8 @@ const localDepth = (() => {
 
 const stage = document.getElementById("stage");
 const view3d = createPhone3D(stage, { get q() { return orientation.q; } });
-function showResult({ result, colours }) {
-  const { points } = view3d.show(result, colours);
+function showResult({ result, colours }, meta) {
+  const { points } = view3d.show(result, colours, { screenAngle: meta?.frames?.[0]?.orientation?.angle ?? 0 });
   stage.classList.add("in3d");
   document.getElementById("legend").hidden = true;
   document.getElementById("bar3d").hidden = false;
@@ -253,6 +276,7 @@ function showResult({ result, colours }) {
   status(`${Math.round(points / 1000)}k points`);
 }
 function showCamera() {
+  setTimeout(fitStage);
   status("ready");
   view3d.hide();
   stage.classList.remove("in3d");
@@ -278,7 +302,7 @@ async function replay(id) {
     const bitmap = await createImageBitmap(await fetch(`stacks/${id}/${f.file}`).then((r) => r.blob()));
     local.frame(i, bitmap, f);
   }
-  showResult(await local.finish(meta));
+  showResult(await local.finish(meta), meta);
 }
 document.getElementById("b-tilt").onclick = () => view3d.setTilt(!view3d.tilt);
 
@@ -342,7 +366,7 @@ const orientation = {
       this.q = eulerToQuat(e.alpha, e.beta, e.gamma); this.source = "deviceorientationabsolute"; this.samples++;
     });
   },
-  snapshot() { return this.q ? { quaternion: this.q, source: this.source, screen: screen.orientation?.type } : null; },
+  snapshot() { return this.q ? { quaternion: this.q, source: this.source, screen: screen.orientation?.type, angle: screen.orientation?.angle ?? 0 } : null; },
 };
 
 // W3C DeviceOrientation Z-X'-Y'' intrinsic angles (degrees) -> quaternion [x, y, z, w].

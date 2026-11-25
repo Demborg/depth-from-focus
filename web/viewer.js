@@ -6,7 +6,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RemoteLink } from "./net/link.js";
 import { pairString, parsePairString } from "./net/signal.js";
 import { laggedDiopters } from "./dff-wasm.js";
-import { F_LONG_PX, discontinuities } from "./cloud.js";
+import { focalPx, discontinuities } from "./cloud.js";
 
 const $ = (id) => document.getElementById(id);
 const PW = 540, PH = 960; // colour copy kept per frame for the all-in-focus colours (half of 1080x1920)
@@ -135,7 +135,7 @@ function addLivePoints(m) {
     const n = m.w * m.h;
     live.pos = new Float32Array(n * 3);
     live.col = new Float32Array(n * 3);
-    live.f = F_LONG_PX * (m.h / 1920);
+    live.f = focalPx(m.w, m.h);
     live.cx = m.w / 2; live.cy = m.h / 2; live.w = m.w;
     const T = makeTransform({ orientation: live.orientation });
     live.M = [T(1, 0, 0), T(0, 1, 0), T(0, 0, 1)];
@@ -214,7 +214,7 @@ function build() {
   $("empty").hidden = true;
   const { result: r, colors, meta } = capture;
   const d = view.depth === "smooth" ? r.diopterSmooth : r.diopter;
-  const f = F_LONG_PX * (r.h / 1920), cx = r.w / 2, cy = r.h / 2;
+  const f = focalPx(r.w, r.h), cx = r.w / 2, cy = r.h / 2;
   const T = makeTransform(meta);
   // T is linear (rotation + axis flips), so bake it into a 3x3 matrix for the inner loop.
   const [c0, c1, c2] = [T(1, 0, 0), T(0, 1, 0), T(0, 0, 1)];

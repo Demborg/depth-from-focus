@@ -4,7 +4,7 @@
 // drag to orbit (OrbitControls touch), or tilt the phone to orbit around the scene (IMU).
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { F_LONG_PX, discontinuities } from "./cloud.js";
+import { focalPx, discontinuities } from "./cloud.js";
 
 const CONF = 1.6, EDGE = 0.06;
 // Tilting the phone by an angle orbits the view by GAIN times that angle around the scene centre.
@@ -27,13 +27,23 @@ export function createPhone3D(stage, orientation) {
   controls.enabled = false;
   controls.rotateSpeed = 0.5; // a phone-width drag is about a half turn at 1.0
 
+  let img = null; // { w, h, f } of the capture, for the field of view
   let cloud = null, target = new THREE.Vector3(), tilt = false, q0 = null, onTilt = () => {};
+  // Screen rotation at capture (screen.orientation.angle): image axes are the device axes turned
+  // by this much about z, so device rotations are conjugated into the image frame.
+  const toImage = new THREE.Quaternion(), zAxis = new THREE.Vector3(0, 0, 1);
   const offset0 = new THREE.Vector3();
 
   function resize() {
     const r = stage.getBoundingClientRect();
     renderer.setSize(r.width, r.height, false);
     camera.aspect = r.width / Math.max(1, r.height);
+    // Fit the capture's image inside the stage like the feed (object-fit: contain): it spans the
+    // full height when the stage is wider than the image, otherwise the full width.
+    if (img) {
+      const halfH = camera.aspect > img.w / img.h ? img.h / 2 : img.w / 2 / camera.aspect;
+      camera.fov = (2 * Math.atan(halfH / img.f) * 180) / Math.PI;
+    }
     camera.updateProjectionMatrix();
   }
   addEventListener("resize", () => { if (!canvas.hidden) resize(); });
@@ -51,7 +61,8 @@ export function createPhone3D(stage, orientation) {
     const angle = 2 * Math.acos(Math.min(1, qa.w));
     const s = Math.sqrt(Math.max(1e-12, 1 - qa.w * qa.w));
     axis.set(qa.x / s, qa.y / s, qa.z / s);
-    return qa.setFromAxisAngle(axis, angle * GAIN);
+    qa.setFromAxisAngle(axis, angle * GAIN);
+    return qa.premultiply(toImage).multiply(qb.copy(toImage).invert());
   }
 
   function frame() {
@@ -92,9 +103,10 @@ export function createPhone3D(stage, orientation) {
     set onTilt(fn) { onTilt = fn; },
     setTilt,
     /** result/colours from dff-worker.js. Builds the cloud in the camera frame and shows it. */
-    show(r, colours, { depth = "smooth" } = {}) {
+    show(r, colours, { depth = "smooth", screenAngle = 0 } = {}) {
+      toImage.setFromAxisAngle(zAxis, (screenAngle * Math.PI) / 180);
       const d = depth === "smooth" ? r.diopterSmooth : r.diopter;
-      const f = F_LONG_PX * (r.h / 1920), cx = r.w / 2, cy = r.h / 2, n = r.w * r.h;
+      const f = focalPx(r.w, r.h), cx = r.w / 2, cy = r.h / 2, n = r.w * r.h;
       const Z = new Float32Array(n);
       for (let p = 0; p < n; p++) Z[p] = 1 / Math.max(1e-3, d[p]);
       const flying = discontinuities(Z, r.w, r.h, EDGE);
@@ -114,15 +126,14 @@ export function createPhone3D(stage, orientation) {
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(pos.subarray(0, k * 3), 3));
       g.setAttribute("color", new THREE.BufferAttribute(col.subarray(0, k * 3), 3));
+      img = { w: r.w, h: r.h, f };
       canvas.hidden = false;
       resize();
       // Point size in device pixels so neighbouring depth pixels just touch at the capture pose.
-      const size = Math.ceil(renderer.domElement.width / r.w) + 1;
+      const fit = Math.min(renderer.domElement.width / r.w, renderer.domElement.height / r.h);
+      const size = Math.ceil(fit) + 1;
       cloud = new THREE.Points(g, new THREE.PointsMaterial({ size, sizeAttenuation: false, vertexColors: true }));
       scene.add(cloud);
-      // Same vertical field of view as the preview (the stage has the stream's 9:16 aspect).
-      camera.fov = (2 * Math.atan(r.h / 2 / f) * 180) / Math.PI;
-      camera.updateProjectionMatrix();
       zs.sort((a, b) => a - b);
       target.set(0, 0, -(zs[zs.length >> 1] ?? 0.5));
       home();
