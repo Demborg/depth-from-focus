@@ -9,17 +9,17 @@ into a 3D point cloud on the desktop. Built for Chrome on a Pixel 9.
   while the lens moves, then a refined cloud replaces them, levelled with the phone's
   orientation sensor.
 - **`web/capture.html`** on the phone highlights what is in focus during a sweep.
-- **`crates/dff-core`** is the depth-from-focus pipeline in dependency-free Rust: breathing
+- **`web/dff-gpu.js`** runs depth from focus on the GPU (WebGPU compute, in a worker): breathing
   alignment, sum-modified-Laplacian focus measure, per-pixel curve normalisation, guided-filter
-  aggregation of the focus volume, centroid peak, lens-lag relabelling. It runs natively
-  (`crates/dff-cli`) and in the browser as a 55 KB wasm module (`crates/dff-wasm`) inside a
-  worker.
+  aggregation of the focus volume, centroid peak. Each frame is processed as it arrives, so the
+  cloud is ready a fraction of a second after the sweep, at the full 1080x1920 by default or
+  540x960 with `?halvings=1` (on either page). Needs WebGPU (Chrome on Android, desktop Chrome).
+- **`crates/dff-core`** is the same pipeline in dependency-free Rust, the reference the GPU
+  version is checked against. `crates/dff-cli` runs it on stored captures.
 
 ## Develop
 
 ```sh
-rustup target add wasm32-unknown-unknown
-./tools/build-wasm.sh        # web/dff.wasm
 python3 server.py            # serves web/ on :8000 and stores captures in data/stacks/
 adb reverse tcp:8000 tcp:8000   # phone reaches the dev server as localhost (camera needs a secure origin)
 node tools/cdp.mjs open      # open the capture page on the phone; `eval` runs JS there

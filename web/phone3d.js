@@ -4,9 +4,8 @@
 // drag to orbit (OrbitControls touch), or tilt the phone to orbit around the scene (IMU).
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { focalPx, discontinuities } from "./cloud.js";
+import { focalPx, cloudMask } from "./cloud.js";
 
-const CONF = 1.6, EDGE = 0.06;
 // Tilting the phone by an angle orbits the view by GAIN times that angle around the scene centre.
 const GAIN = 1.5;
 
@@ -113,14 +112,12 @@ export function createPhone3D(stage, orientation) {
   function build(r, colours, depth) {
     const d = depth === "smooth" ? r.diopterSmooth : r.diopter;
     const f = focalPx(r.w, r.h), cx = r.w / 2, cy = r.h / 2, n = r.w * r.h;
-    const Z = new Float32Array(n);
-    for (let p = 0; p < n; p++) Z[p] = 1 / Math.max(1e-3, d[p]);
-    const flying = discontinuities(Z, r.w, r.h, EDGE);
+    const { Z, keep } = cloudMask(r, d);
     const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), ps = new Float32Array(n), zs = [];
     let k = 0;
     for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
       const p = y * r.w + x;
-      if (r.conf[p] < CONF || !(d[p] > 0.2) || flying[p] || Z[p] > 6) continue;
+      if (!keep[p]) continue;
       const z = Z[p], o = k * 3;
       // Camera frame (x right, y down, z forward) to three.js (x right, y up, z backward).
       pos[o] = ((x + 0.5 - cx) / f) * z; pos[o + 1] = -((y + 0.5 - cy) / f) * z; pos[o + 2] = -z;
@@ -156,10 +153,6 @@ export function createPhone3D(stage, orientation) {
       home();
       setTilt(!!orientation.q);
       return { points: k };
-    },
-    /** Swap in a refined result for the same capture, keeping the current view. */
-    update(r, colours, { depth = "smooth" } = {}) {
-      return { points: build(r, colours, depth).k };
     },
     hide() { canvas.hidden = true; tilt = false; controls.enabled = false; },
     get visible() { return !canvas.hidden; },

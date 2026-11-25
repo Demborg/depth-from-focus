@@ -1,15 +1,14 @@
 // Desktop viewer: pairs with the phone (QR + encrypted MQTT handshake + LAN WebRTC, from stopmotion),
-// triggers a fast focus sweep, runs depth-from-focus in wasm, and renders a point cloud levelled
+// triggers a fast focus sweep, runs depth-from-focus on the GPU (WebGPU), and renders a point cloud levelled
 // with the phone's orientation sensor.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RemoteLink } from "./net/link.js";
 import { pairString, parsePairString } from "./net/signal.js";
-import { laggedDiopters } from "./dff-wasm.js";
-import { focalPx, discontinuities } from "./cloud.js";
+import { laggedDiopters } from "./lag.js";
+import { focalPx, cloudMask } from "./cloud.js";
 
 const $ = (id) => document.getElementById(id);
-const PW = 540, PH = 960; // colour copy kept per frame for the all-in-focus colours (half of 1080x1920)
 
 const ui = {
   log(...a) { const s = a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "); $("log").textContent = (s + "\n" + $("log").textContent).slice(0, 4000); console.log("[viewer]", s); },
@@ -55,34 +54,24 @@ let onWorker = () => {};
 worker.onmessage = ({ data }) => onWorker(data);
 worker.onerror = (e) => ui.log("worker error:", e.message);
 
-// URL overrides for comparisons, e.g. ?agg=0&peak=0&smooth=4&norm=0 approximates the old pipeline.
+// URL overrides for comparisons, e.g. ?halvings=1 for half resolution, ?agg=0&norm=0 without aggregation.
 function urlOpts() {
   const q = new URLSearchParams(location.search), opts = {};
-  for (const k of ["win", "halvings", "smooth", "measure", "peak", "agg", "norm"])
-    if (q.has(k)) opts[{ smooth: "smoothR", peak: "peakR", agg: "aggR" }[k] ?? k] = +q.get(k);
+  for (const k of ["win", "halvings", "peak", "agg", "eps", "norm"])
+    if (q.has(k)) opts[{ peak: "peakR", agg: "aggR", eps: "aggEps" }[k] ?? k] = +q.get(k);
   return opts;
 }
 
 function newIngest({ lag = true, orientation = null } = {}) {
-  let chain = Promise.resolve(), pushed = 0, workMs = 0, lastPush = 0, first = null, tFinish = 0;
-  const refine = (m) => {
-    if (!capture) return;
-    capture = { ...capture, result: m.result, colors: m.colours, framed: true };
-    build();
-    $("s-wasm").textContent = `+${((performance.now() - tFinish) / 1000).toFixed(2)} s · ${m.result.w}x${m.result.h}`;
-    ui.log(`refined to ${m.result.w}x${m.result.h} (${(m.result.finishMs / 1000).toFixed(2)} s)`);
-  };
+  let chain = Promise.resolve(), pushed = 0, workMs = 0, lastPush = 0, tFinish = 0;
   worker.postMessage({ type: "begin", opts: urlOpts(), lag });
   startLive(orientation);
   const progress = new Promise((res) => {
     onWorker = (m) => {
       if (m.type === "points") addLivePoints(m);
       if (m.type === "pushed") { pushed = m.n; workMs += m.ms; lastPush = performance.now(); $("s-wasm").textContent = `frame ${m.n} · ${(live?.count ?? 0).toLocaleString()} points so far`; }
-      if (m.type === "result") {
-        if (!first) { first = m; res(m); } // coarse preview (or the only result)
-        else refine(m); // full detail replacing it
-      }
-      if (m.type === "error") ui.log("worker:", m.message);
+      if (m.type === "result") res(m);
+      if (m.type === "error") { ui.log("worker:", m.message); ui.status(`Depth failed: ${m.message}`, "bad"); }
     };
   });
   return {
@@ -100,8 +89,7 @@ function newIngest({ lag = true, orientation = null } = {}) {
       const t = meta.frames.every((f) => f.t_req_ms != null) && meta.params?.settle === 0;
       const dio = t ? laggedDiopters(meta.frames) : meta.frames.map((f) => 1 / f.focus_requested);
       tFinish = performance.now();
-      // No coarse preview here: the live points already cover the wait, and it would delay full detail.
-      worker.postMessage({ type: "finish", diopters: dio, coarse: 0 });
+      worker.postMessage({ type: "finish", diopters: dio });
       const m = await progress;
       const waited = performance.now() - tFinish;
       const liveCount = live?.count ?? 0;
@@ -196,7 +184,7 @@ function addLivePoints(m) {
 }
 
 // ---------------------------------------------------------------- geometry
-const view = { depth: "smooth", conf: 1.6, size: 2, level: true, edge: 0.06 };
+const view = { depth: "smooth", conf: 1.6, size: 2, level: true, edge: 0.06, blob: 0.002 };
 
 function quatRotate([qx, qy, qz, qw], [x, y, z]) {
   // v' = q v q*
@@ -230,16 +218,14 @@ function build() {
   // T is linear (rotation + axis flips), so bake it into a 3x3 matrix for the inner loop.
   const [c0, c1, c2] = [T(1, 0, 0), T(0, 1, 0), T(0, 0, 1)];
   const n = r.w * r.h;
-  const Z = new Float32Array(n);
-  for (let p = 0; p < n; p++) Z[p] = 1 / Math.max(1e-3, d[p]);
-  const flying = discontinuities(Z, r.w, r.h, view.edge);
+  const { Z, keep } = cloudMask(r, d, view);
   const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), zs = new Float32Array(n);
   let k = 0;
   for (let y = 0; y < r.h; y++) {
     const v = (y + 0.5 - cy) / f;
     for (let x = 0; x < r.w; x++) {
       const p = y * r.w + x;
-      if (r.conf[p] < view.conf || !(d[p] > 0.2) || flying[p] || Z[p] > 6) continue;
+      if (!keep[p]) continue;
       const z = Z[p], X = ((x + 0.5 - cx) / f) * z, Y = v * z, o = k * 3;
       pos[o] = c0[0] * X + c1[0] * Y + c2[0] * z;
       pos[o + 1] = c0[1] * X + c1[1] * Y + c2[1] * z;
@@ -301,6 +287,7 @@ bindRange("r-near", "o-near", (v) => `${v} cm`, () => {});
 bindRange("r-far", "o-far", (v) => `${v} cm`, () => {});
 bindRange("r-conf", "o-conf", (v) => v.toFixed(2), (v) => { view.conf = v; build(); });
 bindRange("r-edge", "o-edge", (v) => (v > 0 ? `${v.toFixed(1)}%` : "off"), (v) => { view.edge = v / 100; build(); });
+bindRange("r-blob", "o-blob", (v) => (v > 0 ? `${v.toFixed(2)}%` : "off"), (v) => { view.blob = v / 100; build(); });
 bindRange("r-size", "o-size", (v) => v.toFixed(2), (v) => { view.size = v; if (cloud) cloud.material.size = v; });
 $("c-level").addEventListener("change", (e) => { view.level = e.target.checked; measure.clear(); if (capture) capture.framed = false; build(); });
 document.querySelectorAll("[data-depth]").forEach((b) => b.addEventListener("click", () => {

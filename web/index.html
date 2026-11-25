@@ -105,6 +105,8 @@
         <input id="r-conf" type="range" min="1" max="4" step="0.05" value="1.6"></label>
       <label class="range" for="r-edge">Drop depth jumps over <output id="o-edge">6.0%</output>
         <input id="r-edge" type="range" min="0" max="15" step="0.5" value="6"></label>
+      <label class="range" for="r-blob" title="Remove patches cut off from every surface that cover less than this much of the image">Drop blobs under <output id="o-blob">0.20%</output>
+        <input id="r-blob" type="range" min="0" max="1" step="0.05" value="0.2"></label>
       <label class="range" for="r-size">Point size <output id="o-size">2.0</output>
         <input id="r-size" type="range" min="0.5" max="6" step="0.25" value="2"></label>
       <label><input type="checkbox" role="switch" id="c-level" checked> Level with phone gravity</label>

@@ -2,6 +2,5 @@ target/
 data/
 out/
 report/
-web/dff.wasm
 __pycache__/
 .venv/

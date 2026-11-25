@@ -2,7 +2,7 @@
 // driven remotely over Chrome DevTools Protocol (tools/cdp.mjs) as well as by buttons.
 import { CameraLink } from "./net/link.js";
 import { pairFromUrl } from "./net/signal.js";
-import { laggedDiopters } from "./dff-wasm.js";
+import { laggedDiopters } from "./lag.js";
 import { createPhone3D } from "./phone3d.js";
 
 const out = document.getElementById("out");
@@ -208,12 +208,20 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
   highlight?.done();
   log("sweep done", id, `${metaObj.total_ms.toFixed(0)} ms`);
   status("computing depth…");
-  local.finish(metaObj, refineResult).then((r) => showResult(r, metaObj)).catch((e) => log("depth failed", String(e)));
+  local.finish(metaObj).then((r) => showResult(r, metaObj)).catch((e) => { log("depth failed", String(e)); status(`depth failed: ${e.message}`); });
   return { id, total_ms: metaObj.total_ms };
 }
 
-// On-device depth: the same wasm worker as the desktop viewer, fed each sweep frame as it is
+// On-device depth: the same WebGPU worker as the desktop viewer, fed each sweep frame as it is
 // grabbed, so the per-frame work overlaps the sweep and the phone can show the result in 3D.
+// Pipeline overrides from the URL, as in the viewer: e.g. ?halvings=1 for half resolution.
+function urlOpts() {
+  const q = new URLSearchParams(location.search), opts = {};
+  for (const k of ["win", "halvings", "peak", "agg", "eps", "norm"])
+    if (q.has(k)) opts[{ peak: "peakR", agg: "aggR", eps: "aggEps" }[k] ?? k] = +q.get(k);
+  return opts;
+}
+
 const localDepth = (() => {
   let worker = null, onMsg = () => {}, seq = 0;
   const get = () => {
@@ -227,28 +235,25 @@ const localDepth = (() => {
   return {
     begin() {
       const w = get();
-      let pushMs = 0, first = true, onRefine = () => {};
+      let pushMs = 0, maxMs = 0, frames = 0;
       const mySeq = ++seq;
-      w.postMessage({ type: "begin", opts: {}, lag: true });
-      // The worker posts a coarse preview first, then the full-detail result.
+      w.postMessage({ type: "begin", opts: urlOpts(), lag: true });
       const result = new Promise((res, rej) => {
         onMsg = (m) => {
-          if (m.type === "pushed") pushMs += m.ms;
-          if (m.type === "result" && m.seq === mySeq) {
-            if (first) { first = false; res({ ...m, pushMs }); } else onRefine(m);
-          }
+          if (m.type === "pushed") { pushMs += m.ms; maxMs = Math.max(maxMs, m.ms); frames++; }
+          if (m.type === "result" && m.seq === mySeq) res({ ...m, pushMs, maxMs, frames });
           if (m.type === "error") rej(new Error(m.message));
         };
       });
       return {
         frame(i, bitmap, meta) { w.postMessage({ type: "frame", i, bitmap, meta }, [bitmap]); },
         // Lens-lag relabelling only for continuous (settle = 0) sweeps, as in the viewer.
-        async finish(meta, refine) {
-          if (refine) onRefine = refine;
+        async finish(meta) {
           const lag = meta.params.settle === 0 && meta.frames.every((f) => f.t_req_ms != null);
           const t = performance.now();
           w.postMessage({ type: "finish", diopters: lag ? laggedDiopters(meta.frames) : meta.frames.map((f) => 1 / f.focus_requested) });
           const r = await result;
+          r.waitMs = performance.now() - t;
           log(`depth ${r.result.w}x${r.result.h}: ${(r.pushMs / 1000).toFixed(1)} s per-frame work, +${((performance.now() - t) / 1000).toFixed(2)} s after the sweep`);
           return r;
         },
@@ -259,21 +264,24 @@ const localDepth = (() => {
 
 const stage = document.getElementById("stage");
 const view3d = createPhone3D(stage, { get q() { return orientation.q; } });
-function showResult({ result, colours }, meta) {
+function showResult({ result, colours, ...r }, meta) {
+  const t = performance.now();
   const { points } = view3d.show(result, colours, { screenAngle: meta?.frames?.[0]?.orientation?.angle ?? 0 });
   stage.classList.add("in3d");
   document.getElementById("legend").hidden = true;
   document.getElementById("bar3d").hidden = false;
   document.getElementById("bar").hidden = true;
   log(`3D view: ${points.toLocaleString()} points`);
-  status(`${Math.round(points / 1000)}k points · refining…`);
-}
-// Full-detail result after the preview: swap the points in place, keeping the current view.
-function refineResult({ result, colours }) {
-  if (!view3d.visible) return;
-  const { points } = view3d.update(result, colours);
-  log(`refined: ${result.w}x${result.h}, ${points.toLocaleString()} points (${(result.finishMs / 1000).toFixed(1)} s)`);
   status(`${Math.round(points / 1000)}k points`);
+  // Temporary: timings to report back while tuning the GPU pipeline on the phone.
+  const tm = document.getElementById("timing");
+  tm.hidden = false;
+  tm.textContent = [
+    `${result.w}x${result.h} · ${r.frames} frames · sweep ${((meta?.total_ms ?? 0) / 1000).toFixed(1)} s`,
+    `per frame ${(r.pushMs / r.frames).toFixed(0)} ms avg, ${r.maxMs.toFixed(0)} max`,
+    `after sweep +${(r.waitMs / 1000).toFixed(2)} s (final pass ${(result.finishMs / 1000).toFixed(2)} s)`,
+    `cloud build ${((performance.now() - t) / 1000).toFixed(2)} s · ${points.toLocaleString()} points`,
+  ].join("\n");
 }
 function showCamera() {
   setTimeout(fitStage);
@@ -284,6 +292,7 @@ function showCamera() {
   document.getElementById("bar3d").hidden = true;
   document.getElementById("bar").hidden = false;
   document.getElementById("hint3d").hidden = true;
+  document.getElementById("timing").hidden = true;
 }
 view3d.onTilt = (on) => {
   const b = document.getElementById("b-tilt");
@@ -302,7 +311,7 @@ async function replay(id) {
     const bitmap = await createImageBitmap(await fetch(`stacks/${id}/${f.file}`).then((r) => r.blob()));
     local.frame(i, bitmap, f);
   }
-  showResult(await local.finish(meta, refineResult), meta);
+  showResult(await local.finish(meta), meta);
 }
 document.getElementById("b-tilt").onclick = () => view3d.setTilt(!view3d.tilt);
 

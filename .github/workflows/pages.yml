@@ -20,12 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
       - name: Test core
         run: cargo test -p dff-core --release
-      - name: Build wasm
-        run: ./tools/build-wasm.sh
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web

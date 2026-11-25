@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dff-core", "crates/dff-cli", "crates/dff-wasm"]
+members = ["crates/dff-core", "crates/dff-cli"]
 
 [profile.release]
 debug = false
