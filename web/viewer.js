@@ -57,7 +57,7 @@ worker.onerror = (e) => ui.log("worker error:", e.message);
 // URL overrides for comparisons, e.g. ?halvings=1 for half resolution, ?agg=0&norm=0 without aggregation.
 function urlOpts() {
   const q = new URLSearchParams(location.search), opts = {};
-  for (const k of ["win", "halvings", "peak", "agg", "eps", "norm"])
+  for (const k of ["win", "halvings", "peak", "agg", "eps", "norm", "sharp"])
     if (q.has(k)) opts[{ peak: "peakR", agg: "aggR", eps: "aggEps" }[k] ?? k] = +q.get(k);
   return opts;
 }
@@ -184,7 +184,7 @@ function addLivePoints(m) {
 }
 
 // ---------------------------------------------------------------- geometry
-const view = { depth: "smooth", conf: 1.6, size: 2, level: true, edge: 0.06, blob: 0.002 };
+const view = { depth: "smooth", conf: 1.6, size: 2, level: true, edge: 0.02, blob: 0.01 };
 
 function quatRotate([qx, qy, qz, qw], [x, y, z]) {
   // v' = q v q*
@@ -199,11 +199,15 @@ function makeTransform(meta) {
   const q = view.level && meta.orientation?.quaternion;
   if (!q) return (X, Y, Z) => [X, -Y, -Z];
   const toThree = ([e, n, u]) => [e, u, -n];
+  // With the screen turned (landscape: angle 90 or 270) the image's axes are the device's turned by
+  // that angle about z, so image vectors are turned back by it before applying the device rotation.
+  const a = (-(meta.orientation.angle ?? 0) * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
+  const toDevice = ([x, y, z]) => [x * ca - y * sa, x * sa + y * ca, z];
   const fwd = toThree(quatRotate(q, [0, 0, -1]));
   const yaw = Math.atan2(fwd[0], -fwd[2]); // rotate so forward points to -z
   const cy = Math.cos(yaw), sy = Math.sin(yaw);
   return (X, Y, Z) => {
-    const [x, y, z] = toThree(quatRotate(q, [X, -Y, -Z]));
+    const [x, y, z] = toThree(quatRotate(q, toDevice([X, -Y, -Z])));
     return [x * cy - z * sy, y, x * sy + z * cy];
   };
 }
@@ -314,6 +318,18 @@ async function replay(id) {
   ui.status(`Replaying ${id}`, "linked");
 }
 
+// ---------------------------------------------------------------- saving sweeps (dev server)
+// Served by the dev server (python3 server.py), every paired sweep is also written to
+// data/stacks/<id>/ like the phone's own dev captures, for replays and the demo video (demo.html).
+const SAVE = ["localhost", "127.0.0.1"].includes(location.hostname);
+let saving = null; // { id, uploads }
+function save(path, body, type) {
+  if (!saving) return;
+  saving.uploads.push(fetch(`/api/${path}`, { method: "POST", headers: { "Content-Type": type }, body })
+    .then((r) => { if (!r.ok) throw new Error(`${path}: ${r.status}`); })
+    .catch((e) => ui.log("save failed:", e.message)));
+}
+
 // ---------------------------------------------------------------- pairing
 const link = new RemoteLink();
 const LINK_TEXT = { starting: "Starting…", waiting: "Waiting for phone", connecting: "Linking…", linked: "Phone linked", error: "No pairing broker" };
@@ -337,10 +353,16 @@ link.addEventListener("wire", (e) => {
     if (m.type === "hello") phoneOrientation = m.orientation;
     if (m.type === "hello") ui.log("phone:", m.settings?.width + "x" + m.settings?.height, m.orientation?.source ?? "no orientation");
     if (m.type === "progress") { $("prog").max = m.n; $("prog").value = m.k; }
-    if (m.type === "frame") pending.add(m.i, m.file, m.meta);
+    if (m.type === "frame") { pending.add(m.i, m.file, m.meta); save(`frame?stack=${saving?.id}&i=${m.i}`, m.file, "image/jpeg"); }
     if (m.type === "meta") {
       const ingest = pending;
       pending = null;
+      if (saving) {
+        const s = saving;
+        saving = null;
+        s.uploads.push(fetch(`/api/meta?stack=${s.id}`, { method: "POST", body: JSON.stringify(m.meta) }));
+        Promise.all(s.uploads).then(() => ui.log(`saved data/stacks/${s.id} · demo: demo.html?stack=${s.id}`));
+      }
       ui.status("Computing depth…", "linked");
       await new Promise((r) => setTimeout(r, 20));
       await ingest.finish(m.meta);
@@ -358,8 +380,10 @@ $("b-sweep").addEventListener("click", () => {
   $("prog").value = 0;
   capture && (capture.framed = capture.framed); // keep the current view while re-capturing
   const lo = +$("r-near").value / 100, hi = +$("r-far").value / 100;
+  const id = new Date().toISOString().replace(/[:.]/g, "-");
+  saving = SAVE ? { id, uploads: [] } : null;
   ui.status("Sweeping…", "linked");
-  link.wire.send({ type: "sweep", params: { n: 40, lo, hi, settle: 0, skip: 0 } });
+  link.wire.send({ type: "sweep", params: { n: 40, lo, hi, settle: 0, skip: 0, id } });
 });
 // ---------------------------------------------------------------- measuring
 // Click two points on the cloud to measure the straight-line distance between them (metres, in
@@ -475,7 +499,7 @@ const measure = (() => {
 // Main-thread long tasks (>50 ms), for checking that depth work stays off the page.
 const longTasks = [];
 try { new PerformanceObserver((l) => longTasks.push(...l.getEntries().map((e) => Math.round(e.duration)))).observe({ type: "longtask" }); } catch {}
-window.viewer = { longTasks, measure, sweep: () => $("b-sweep").click(), link, camera, controls, get capture() { return capture; } };
+window.viewer = { longTasks, measure, sweep: () => $("b-sweep").click(), link, camera, controls, get capture() { return capture; }, get cloud() { return cloud; } };
 
 const stackId = new URLSearchParams(location.search).get("stack");
 if (stackId) {

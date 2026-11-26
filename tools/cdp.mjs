@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Drive the capture page in Chrome on the phone over the DevTools protocol.
-//   node tools/cdp.mjs open                 # adb reverse/forward, open page in Chrome, grant camera
+//   node tools/cdp.mjs open [query]         # adb reverse/forward, open page in Chrome, grant camera
 //   node tools/cdp.mjs eval '<js expr>'     # evaluate (awaits promises), prints JSON result
 //   node tools/cdp.mjs reload
 import { execFileSync } from "node:child_process";
@@ -59,7 +59,7 @@ async function grant() {
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === "open") {
   setupPorts();
-  adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", `${ORIGIN}/capture.html?t=${Date.now()}`, "com.android.chrome");
+  adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", `'${ORIGIN}/capture.html?t=${Date.now()}${arg ? "&" + arg : ""}'`, "com.android.chrome"); // URL quoted for the device shell
   await new Promise((r) => setTimeout(r, 2500));
   await grant();
   console.log("opened");

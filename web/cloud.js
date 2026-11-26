@@ -52,7 +52,7 @@ export function dropBlobs(Z, keep, w, h, rel, minPx) {
 
 /** Which depth pixels become points: confident, in range, not on a depth jump, not in a small
  *  blob. `blob` is the smallest kept blob as a fraction of the image. Returns { Z, keep }. */
-export function cloudMask(r, d, { conf = 1.6, edge = 0.06, blob = 0.002 } = {}) {
+export function cloudMask(r, d, { conf = 1.6, edge = 0.02, blob = 0.01 } = {}) {
   const n = r.w * r.h, Z = new Float32Array(n), keep = new Uint8Array(n);
   for (let p = 0; p < n; p++) Z[p] = 1 / Math.max(1e-3, d[p]);
   const flying = discontinuities(Z, r.w, r.h, edge);

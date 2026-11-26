@@ -19,9 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Test core
-        run: cargo test -p dff-core --release
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web

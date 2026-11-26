@@ -146,7 +146,10 @@ function makeHighlighter(canvasEl) {
 // localhost), a paired viewer over WebRTC, or nowhere (standalone demo: just the highlight).
 const devServer = ["localhost", "127.0.0.1"].includes(location.hostname);
 const serverSink = (id) => devServer
-  ? { frame: (i, blob) => post(`/api/frame?stack=${id}&i=${i}`, blob, "image/jpeg"), meta: (obj) => post(`/api/meta?stack=${id}`, JSON.stringify(obj)) }
+  ? {
+      frame: (i, blob) => post(`/api/frame?stack=${id}&i=${i}`, blob, "image/jpeg"),
+      meta: (obj) => post(`/api/meta?stack=${id}`, JSON.stringify(obj)),
+    }
   : { frame: async () => {}, meta: async () => {} };
 
 async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, id, lock = true, spacing = "diopter", sink, onProgress } = {}) {
@@ -217,7 +220,7 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
 // Pipeline overrides from the URL, as in the viewer: e.g. ?halvings=1 for half resolution.
 function urlOpts() {
   const q = new URLSearchParams(location.search), opts = {};
-  for (const k of ["win", "halvings", "peak", "agg", "eps", "norm"])
+  for (const k of ["win", "halvings", "peak", "agg", "eps", "norm", "sharp"])
     if (q.has(k)) opts[{ peak: "peakR", agg: "aggR", eps: "aggEps" }[k] ?? k] = +q.get(k);
   return opts;
 }

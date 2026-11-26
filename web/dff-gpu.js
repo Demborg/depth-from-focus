@@ -1,12 +1,12 @@
-// Depth from focus on the GPU (WebGPU compute). The same pipeline as crates/dff-core, which stays
-// as the native reference (dff-cli, tools/compare.py):
+// Depth from focus on the GPU (WebGPU compute). tools/accuracy.mjs scores it on stored captures.
 //
 //   per frame, as it arrives
 //     luma, modified Laplacian on the full-res frame, block-averaged to the measure resolution
 //     breathing: blurred gradient image at quarter res, NCC against the previous frame over a
 //       range of scales (read back, a few floats) -> cumulative magnification
 //     focus measure rescaled about the centre, box-summed (SML), stored as one layer of the
-//       focus volume; running per-pixel max / argmax / min / sum and all-in-focus guide
+//       focus volume; running per-pixel max / argmax / min / sum
+//     all-in-focus image (colours and aggregation guide) from a 3x3 focus measure
 //     early points: pixels whose peak is clearly behind the sweep (streamed to the viewer)
 //   at the end
 //     per-pixel curve normalisation, guided-filter aggregation of every slice (He et al.),
@@ -18,7 +18,9 @@
 // Full resolution by default (halvings = 0: depth per pixel of the 1080x1920 stream). Radii are
 // given at 540x960 (halvings = 1) and scaled with the measure resolution, so the aggregation
 // covers the same part of the scene at any resolution.
-export const DEFAULTS = { win: 6, halvings: 0, peakR: 6, aggR: 16, aggEps: 1e-3, norm: 1 };
+// aggR 8 (16 px at full res): with a larger radius the guided filter spreads each depth jump at an
+// object's outline into a ramp, which shows as sheets of points along the view rays.
+export const DEFAULTS = { win: 6, halvings: 0, peakR: 6, aggR: 8, aggEps: 1e-3, norm: 1, sharp: 1 };
 
 const SEG = 32; // outputs per thread in the sliding-window box filters
 
@@ -218,7 +220,7 @@ ${bil("ms", "m0")}
 @group(0) @binding(2) var vol: texture_storage_2d<r32float, write>;
 @group(0) @binding(3) var<storage, read_write> stats: array<vec4f>;
 @group(0) @binding(4) var<storage, read_write> bestk: array<u32>;
-struct U { w: u32, h: u32, r: i32, k: u32, s: f32 }
+struct U { w: u32, h: u32, r: i32, k: u32, s: f32, sharp: u32 }
 @group(0) @binding(5) var<uniform> u: U;
 ${bil("ga", "a0")}
 @compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -236,7 +238,7 @@ ${bil("ga", "a0")}
   if (u.k == 0u) { stats[p] = vec4f(v, v, v, g); bestk[p] = 0u; return; }
   var st = stats[p];
   st.x += v; st.y = min(st.y, v);
-  if (v > st.z) { st.z = v; st.w = g; bestk[p] = u.k; }
+  if (v > st.z) { st.z = v; if (u.sharp == 0u) { st.w = g; } bestk[p] = u.k; }
   stats[p] = st;
 }`,
   },
@@ -300,8 +302,9 @@ struct U { w: u32, h: u32, n: u32, norm: u32 }
   // Peak per pixel over the (aggregated) volume: argmax, then a baseline-subtracted centroid over
   // +-R frames (or a 3-point Gaussian fit for R = 0); diopters from the per-frame labels and the
   // colour from the sharpest frame.
+  // With sharp = 1 the colour is the full-res all-in-focus image (pass "sharpest") instead.
   peak: {
-    layout: ["tex-uf-a", "ro", "ro", "ro", "tex-a", "rw", "rw", "rw", "uni"],
+    layout: ["tex-uf-a", "ro", "ro", "ro", "tex-a", "rw", "rw", "rw", "uni", "ro"],
     code: /* wgsl */ `
 @group(0) @binding(0) var vol: texture_2d_array<f32>;
 @group(0) @binding(1) var<storage, read> nrm: array<vec4f>;
@@ -311,8 +314,9 @@ struct U { w: u32, h: u32, n: u32, norm: u32 }
 @group(0) @binding(5) var<storage, read_write> dio: array<f32>;
 @group(0) @binding(6) var<storage, read_write> conf: array<f32>;
 @group(0) @binding(7) var<storage, read_write> rgb: array<u32>;
-struct U { w: u32, h: u32, n: u32, r: u32, cw: u32, ch: u32 }
+struct U { w: u32, h: u32, n: u32, r: u32, cw: u32, ch: u32, sharp: u32 }
 @group(0) @binding(8) var<uniform> u: U;
+@group(0) @binding(9) var<storage, read> aif: array<vec2f>;
 fn V(x: u32, y: u32, k: u32) -> f32 { return textureLoad(vol, vec2u(x, y), k, 0).x; }
 ${COLOUR_AT}
 @compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -338,7 +342,48 @@ ${COLOUR_AT}
   let i0 = min(u32(max(t, 0.0)), u.n - 1u); let i1 = min(i0 + 1u, u.n - 1u); let f = t - f32(i0);
   dio[p] = labels[i0] * (1.0 - f) + labels[i1] * f;
   conf[p] = nrm[p].w;
-  rgb[p] = colourAt(id.x, id.y, t);
+  rgb[p] = select(colourAt(id.x, id.y, t), bitcast<u32>(aif[p].y), u.sharp != 0u);
+}`,
+  },
+  // All-in-focus image, per frame: each pixel keeps the colour (full-res, from the source frame)
+  // and luma of the frame where a 3x3 mean of the modified Laplacian is highest so far. The focus
+  // volume uses a much larger window (needed for a stable depth), and choosing colours or the
+  // aggregation guide with that window blurs them at occlusion edges: pixels next to a sharp near
+  // object pick the frame where the object is in focus and they themselves are blurred.
+  // aif = (best 3x3 measure, packed RGBA bits); the luma goes to stats.w as the guide.
+  sharpest: {
+    layout: ["tex", "ro", "ro", "rw", "rw", "uni"],
+    code: /* wgsl */ `
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var<storage, read> m0: array<f32>;
+@group(0) @binding(2) var<storage, read> a0: array<f32>;
+@group(0) @binding(3) var<storage, read_write> stats: array<vec4f>;
+@group(0) @binding(4) var<storage, read_write> aif: array<vec2f>;
+struct U { w: u32, h: u32, W: u32, H: u32, k: u32, s: f32, B: u32 }
+@group(0) @binding(5) var<uniform> u: U;
+${bil("ms", "m0")}
+${bil("ga", "a0")}
+fn texel(x: f32, y: f32) -> vec4f {
+  let fx = clamp(x, 0.0, f32(u.W - 1u)); let fy = clamp(y, 0.0, f32(u.H - 1u));
+  let x0 = i32(fx); let y0 = i32(fy);
+  let x1 = min(x0 + 1, i32(u.W) - 1); let y1 = min(y0 + 1, i32(u.H) - 1);
+  let ax = fx - f32(x0); let ay = fy - f32(y0);
+  let a = mix(textureLoad(src, vec2i(x0, y0), 0), textureLoad(src, vec2i(x1, y0), 0), ax);
+  let b = mix(textureLoad(src, vec2i(x0, y1), 0), textureLoad(src, vec2i(x1, y1), 0), ax);
+  return mix(a, b, ay);
+}
+@compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) id: vec3u) {
+  if (id.x >= u.w || id.y >= u.h) { return; }
+  let cx = (f32(u.w) - 1.0) * 0.5; let cy = (f32(u.h) - 1.0) * 0.5;
+  let X = cx + (f32(id.x) - cx) * u.s; let Y = cy + (f32(id.y) - cy) * u.s;
+  var f = 0.0;
+  for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) { f += ms(X + f32(dx), Y + f32(dy)); } }
+  let p = id.y * u.w + id.x;
+  if (u.k > 0u && f <= aif[p].x) { return; }
+  let B = f32(u.B); let CX = (f32(u.W) - 1.0) * 0.5; let CY = (f32(u.H) - 1.0) * 0.5;
+  let c = texel(CX + ((f32(id.x) + 0.5) * B - 0.5 - CX) * u.s, CY + ((f32(id.y) + 0.5) * B - 0.5 - CY) * u.s);
+  aif[p] = vec2f(f, bitcast<f32>(pack4x8unorm(c)));
+  stats[p].w = ga(X, Y);
 }`,
   },
 };
@@ -509,7 +554,7 @@ class Session {
     this.m0 = this.buf(N * 4); this.a0 = this.buf(N * 4); this.tmp1 = this.buf(N * 4);
     this.q = this.buf(qw * qh * 4); this.qt = this.buf(qw * qh * 4);
     this.st = [this.buf(qw * qh * 4), this.buf(qw * qh * 4)];
-    this.stats = this.buf(N * 16); this.bestk = this.buf(N * 4); this.decided = this.buf(N * 4);
+    this.stats = this.buf(N * 16); this.bestk = this.buf(N * 4); this.decided = this.buf(N * 4); this.aif = this.buf(N * 8);
     this.nccScales = this.buf(64 * 4); this.score = this.buf(64 * 4);
     this.scalesBuf = this.buf(1024 * 4); this.labels = this.buf(1024 * 4);
     this.out = this.buf(16 + N * 16);
@@ -521,7 +566,8 @@ class Session {
       blurX: this.uni("uuii", [qw, qh, 1, 0]), blurY: this.uni("uuii", [qw, qh, 0, 1]),
       grad: this.uni("uu", [qw, qh]),
       ncc: this.uni("uuuuuu", [qw, qh, Math.floor(qw * m), Math.floor(qw * (1 - m)), Math.floor(qh * m), Math.floor(qh * (1 - m))]),
-      frame: this.uni("uuiuf", [w, h, r, 0, 1]),
+      frame: this.uni("uuiufu", [w, h, r, 0, 1, o.sharp ? 1 : 0]),
+      sharpest: this.uni("uuuuufu", [w, h, W, H, 0, 1, B]),
       box: this.uni("uuif", [w, h, this.agg, o.aggEps]),
     };
     this.grow(40);
@@ -587,9 +633,13 @@ class Session {
     }
     this.scales.push(this.cum);
     d.queue.writeBuffer(this.scalesBuf, k * 4, new Float32Array([this.cum]));
-    this.uni("uuiuf", [this.w, this.h, Math.max(1, this.o.win >> this.o.halvings), k, this.cum], this.u.frame);
+    this.uni("uuiufu", [this.w, this.h, Math.max(1, this.o.win >> this.o.halvings), k, this.cum, this.o.sharp ? 1 : 0], this.u.frame);
     this.run(enc, "rescaleH", [this.m0, this.tmp1, this.u.frame], g(this.w), g(this.h));
     this.run(enc, "storeV", [this.tmp1, this.a0, this.layer(this.vol, k), this.stats, this.bestk, this.u.frame], g(this.w), g(this.h));
+    if (this.o.sharp) {
+      this.uni("uuuuufu", [this.w, this.h, this.W, this.H, k, this.cum, 1 << this.o.halvings], this.u.sharpest);
+      this.run(enc, "sharpest", [srcView, this.m0, this.a0, this.stats, this.aif, this.u.sharpest], g(this.w), g(this.h));
+    }
     d.queue.submit([enc.finish()]);
     this.n++;
     this.pushMs += performance.now() - t0;
@@ -644,8 +694,8 @@ class Session {
           this.run(enc, "boxVQ", [tmp, nrm, this.layer(this.vol, k), this.u.box], gV);
         }
       }
-      const u = this.uni("uuuuuu", [w, h, n, this.o.peakR, this.cw, this.ch]);
-      this.run(enc, "peak", [this.vol.createView({ dimension: "2d-array" }), nrm, this.labels, this.scalesBuf, this.col.createView({ dimension: "2d-array" }), dio, conf, rgb, u], g16(w), g16(h));
+      const u = this.uni("uuuuuuu", [w, h, n, this.o.peakR, this.cw, this.ch, this.o.sharp ? 1 : 0]);
+      this.run(enc, "peak", [this.vol.createView({ dimension: "2d-array" }), nrm, this.labels, this.scalesBuf, this.col.createView({ dimension: "2d-array" }), dio, conf, rgb, u, this.aif], g16(w), g16(h));
       d.queue.submit([enc.finish()]);
       const [dv, fv, cv] = await Promise.all([this.read(dio, this.N * 4), this.read(conf, this.N * 4), this.read(rgb, this.N * 4)]);
       const diopter = new Float32Array(dv), C = new Uint8Array(cv), colours = new Uint8Array(this.N * 3);
@@ -668,7 +718,7 @@ class Session {
 
 const steps = (c, range, n) => Array.from({ length: n + 1 }, (_, i) => c - range + (2 * range * i) / n);
 
-/** Best scale from scores at steps(c, range, n), with parabolic refinement (as dff-core). */
+/** Best scale from scores at steps(c, range, n), with parabolic refinement. */
 function pick(scores, c, range, n) {
   let k = 0;
   for (let i = 1; i <= n; i++) if (scores[i] > scores[k]) k = i;

@@ -1,7 +1,0 @@
-[workspace]
-resolver = "2"
-members = ["crates/dff-core", "crates/dff-cli"]
-
-[profile.release]
-debug = false
-opt-level = 3

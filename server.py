@@ -6,6 +6,7 @@ Phone reaches it via `adb reverse tcp:8000 tcp:8000` -> http://localhost:8000 (s
   POST /api/frame?stack=<id>&i=<n>   body: image/jpeg   -> data/stacks/<id>/<n>.jpg
   POST /api/meta?stack=<id>          body: json          -> data/stacks/<id>/meta.json
   POST /api/log                      body: json          -> appended to data/log.jsonl + printed
+  POST /api/render?name=<n>&i=<n>    body: image/jpeg   -> data/render/<name>/<n>.jpg (demo video frames)
 """
 import json
 import re
@@ -60,6 +61,14 @@ class Handler(SimpleHTTPRequestHandler):
             with open(DATA / "log.jsonl", "a") as f:
                 f.write(json.dumps(rec) + "\n")
             print("LOG", json.dumps(rec)[:2000], flush=True)
+            return self._reply()
+        if u.path == "/api/render":
+            name = q.get("name", "")
+            if not SAFE.match(name):
+                return self._reply(400, {"error": "bad name"})
+            d = DATA / "render" / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{int(q['i']):05d}.jpg").write_bytes(body)
             return self._reply()
         stack = q.get("stack", "")
         if not SAFE.match(stack):

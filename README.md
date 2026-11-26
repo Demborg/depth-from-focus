@@ -8,14 +8,16 @@ into a 3D point cloud on the desktop. Built for Chrome on a Pixel 9.
   [stopmotion](https://github.com/Demborg/stopmotion)). Press *Sweep focus*: points stream in
   while the lens moves, then a refined cloud replaces them, levelled with the phone's
   orientation sensor.
-- **`web/capture.html`** on the phone highlights what is in focus during a sweep.
+- **`web/capture.html`** on the phone highlights what is in focus during a sweep and shows its own
+  3D view afterwards. Opening the viewer on a phone goes here.
 - **`web/dff-gpu.js`** runs depth from focus on the GPU (WebGPU compute, in a worker): breathing
   alignment, sum-modified-Laplacian focus measure, per-pixel curve normalisation, guided-filter
-  aggregation of the focus volume, centroid peak. Each frame is processed as it arrives, so the
-  cloud is ready a fraction of a second after the sweep, at the full 1080x1920 by default or
-  540x960 with `?halvings=1` (on either page). Needs WebGPU (Chrome on Android, desktop Chrome).
-- **`crates/dff-core`** is the same pipeline in dependency-free Rust, the reference the GPU
-  version is checked against. `crates/dff-cli` runs it on stored captures.
+  aggregation of the focus volume guided by a sharp all-in-focus image, centroid peak. Each frame
+  is processed as it arrives, so the cloud is ready a fraction of a second after the sweep, at the
+  full 1080x1920 by default or 540x960 with `?halvings=1` (on either page). Needs WebGPU (Chrome
+  on Android, desktop Chrome).
+- **`web/demo.html?stack=<id>`** plays a stored capture as a looping demo (focus sweep, point cloud
+  taking over, orbit); `tools/demo_video.sh <id>` renders it to an mp4.
 
 ## Develop
 
@@ -25,9 +27,10 @@ adb reverse tcp:8000 tcp:8000   # phone reaches the dev server as localhost (cam
 node tools/cdp.mjs open      # open the capture page on the phone; `eval` runs JS there
 ```
 
-`index.html?stack=<id>&realtime` replays a capture from `data/stacks/` at its original pacing.
-`cargo run --release -p dff-cli -- depth data/stacks/<id> out/<id>` runs the native pipeline;
-`tools/compare.py` scores configurations against a flat cutting mat.
+Sweeps run from a viewer served by the dev server are saved to `data/stacks/<id>/`.
+`index.html?stack=<id>&realtime` replays one at its original pacing.
+`node tools/accuracy.mjs lag_up '{"aggR": 8}'` scores pipeline options against a capture of a flat
+cutting mat (headless Chrome with WebGPU; see the script).
 
 ## Notes
 
