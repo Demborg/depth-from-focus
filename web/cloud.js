@@ -1,8 +1,8 @@
 // Geometry shared by the desktop viewer and the phone's 3D view.
 
-// Pixel 9 main camera, 1080x1920 preview stream. Calibrated from the cutting mat's 1 cm grid
-// (tools/calib_fov.py): f = 890 px at 540x960, i.e. ~57 deg across the long side.
-export const F_LONG_PX = 1780;
+// Pixel 9 main camera, 1080x1920 preview stream. Calibrated from a 20-view A3 ChArUco target
+// (data/stacks/cal_charuco, RMS = 0.58 px): fx = 1601.3, fy = 1602.2 (~61.9 deg across long side).
+export const F_LONG_PX = 1602;
 /** Focal length in pixels for a w x h image of that stream, in either orientation. */
 export const focalPx = (w, h) => F_LONG_PX * (Math.max(w, h) / 1920);
 

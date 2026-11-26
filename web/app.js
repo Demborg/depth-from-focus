@@ -63,23 +63,27 @@ function caps() {
 }
 
 // Lock exposure + white balance at their current auto values so brightness doesn't drift mid-sweep.
+// Exposure and white balance are applied in separate constraint calls because Android Chrome
+// reports colorTemperature = 0 in auto mode, which can reject a bundled manual-mode constraint.
 async function lockAuto() {
   const c = state.track.getCapabilities();
   const s = state.track.getSettings();
-  const adv = {};
+  const clampStep = (v, r) => {
+    const cl = Math.min(r.max, Math.max(r.min, v));
+    return r.step ? Math.round((cl - r.min) / r.step) * r.step + r.min : cl;
+  };
   if (c.exposureMode?.includes("manual")) {
-    adv.exposureMode = "manual";
-    if (s.exposureTime && c.exposureTime) adv.exposureTime = s.exposureTime;
-    if (s.iso && c.iso) adv.iso = s.iso;
+    const exp = { exposureMode: "manual" };
+    if (s.exposureTime && c.exposureTime) exp.exposureTime = clampStep(s.exposureTime, c.exposureTime);
+    if (s.iso && c.iso) exp.iso = clampStep(s.iso, c.iso);
+    try { await state.track.applyConstraints({ advanced: [exp] }); } catch (e) { log("lockAuto exp failed", String(e)); }
   }
-  if (c.whiteBalanceMode?.includes("manual")) {
-    adv.whiteBalanceMode = "manual";
-    if (s.colorTemperature && c.colorTemperature) adv.colorTemperature = s.colorTemperature;
-  }
-  try {
-    await state.track.applyConstraints({ advanced: [adv] });
-  } catch (e) {
-    log("lockAuto failed", String(e));
+  if (c.whiteBalanceMode?.includes("manual") && c.colorTemperature && s.colorTemperature >= c.colorTemperature.min && s.colorTemperature <= c.colorTemperature.max) {
+    try {
+      await state.track.applyConstraints({ advanced: [{ whiteBalanceMode: "manual", colorTemperature: clampStep(s.colorTemperature, c.colorTemperature) }] });
+    } catch (e) {
+      log("lockAuto wb failed", String(e));
+    }
   }
   return state.track.getSettings();
 }

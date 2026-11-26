@@ -22,9 +22,21 @@
 // covers the same part of the scene at any resolution.
 // aggR 8 (16 px at full res): with a larger radius the guided filter spreads each depth jump at an
 // object's outline into a ramp, which shows as sheets of points along the view rays.
-export const DEFAULTS = { win: 6, halvings: 0, peakR: 6, aggR: 8, aggEps: 1e-3, norm: 1, sharp: 1 };
+export const DEFAULTS = { win: 6, halvings: 0, peakR: 6, aggR: 8, aggEps: 2e-3, norm: 1, sharp: 1 };
 
 const SEG = 32; // outputs per thread in the sliding-window vertical box filters
+
+// Pixel 9 aspheric Petzval field-curvature correction (diopters): calibrated jointly across
+// ChArUco + ArUco dead-leaves (landscape) and cutting-mat stacks (portrait). The negative r^4
+// term matches the outer-field aspheric turnover so corners don't over-correct.
+const PETZVAL = /* wgsl */ `
+fn petzval(x: u32, y: u32, w: u32, h: u32) -> f32 {
+  let half = f32(max(w, h)) * 0.5;
+  let rx = (f32(x) + 0.5 - f32(w) * 0.5) / half;
+  let ry = (f32(y) + 0.5 - f32(h) * 0.5) / half;
+  let r2 = rx * rx + ry * ry;
+  return 0.54 * r2 - 0.22 * r2 * r2;
+}`;
 
 // ------------------------------------------------------------------------------------ shaders
 const bil = (name, buf, w = "u.w", h = "u.h") => /* wgsl */ `
@@ -94,7 +106,9 @@ var<workgroup> tile: array<f32, 324>;
       ml = abs(2.0 * c - tile[idx - 1u] - tile[idx + 1u]) + abs(2.0 * c - tile[idx - 18u] - tile[idx + 18u]);
     }
     let p = gy * u.w + gx;
-    m0[p] = ml;
+    // Weber-contrast normalisation stops bright highlights from overpowering dark silhouettes
+    // across SML windows and reduces sensitivity to exposure/bellows brightness drift.
+    m0[p] = ml / (c + 0.35);
     if (u.writeA0 != 0u) { a0[p] = c; }
   }
   if ((lid.x & 3u) == 0u && (lid.y & 3u) == 0u) {
@@ -133,7 +147,8 @@ fn L(x: i32, y: i32) -> f32 { return luma(${SRC_LOAD(ext, "vec2i(x, y)")}); }
     }
   }
   let p = id.y * u.w + id.x; let inv = 1.0 / f32(u.B * u.B);
-  m0[p] = ms * inv; a0[p] = asum * inv;
+  let a = asum * inv;
+  m0[p] = (ms * inv) / (a + 0.35); a0[p] = a;
 }`,
     },
     // Quarter-res luma (4x4 blocks) for breathing alignment when halvings >= 1.
@@ -432,6 +447,7 @@ struct U { w: u32, h: u32, n: u32, r: u32, drop: f32, minConf: f32, cw: u32, ch:
 @group(0) @binding(9) var<uniform> u: U;
 fn V(x: u32, y: u32, k: u32) -> f32 { return textureLoad(vol, vec2u(x, y), k, 0).x; }
 ${COLOUR_AT}
+${PETZVAL}
 @compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= u.w || id.y >= u.h) { return; }
   let p = id.y * u.w + id.x;
@@ -450,7 +466,7 @@ ${COLOUR_AT}
     let w = max(V(id.x, id.y, j) - base, 0.0) * dd;
     sw += w; sd += w * labels[j]; sk += w * f32(j);
   }
-  let d = select(labels[k], sd / sw, sw > 0.0);
+  let d = select(labels[k], sd / sw, sw > 0.0) + petzval(id.x, id.y, u.w, u.h);
   let t = select(f32(k), sk / sw, sw > 0.0);
   decided[p] = 1u;
   let z = 1.0 / max(d, 1e-6);
@@ -697,6 +713,7 @@ struct U { w: u32, h: u32, n: u32, r: u32, cw: u32, ch: u32, sharp: u32 }
 @group(0) @binding(8) var<uniform> u: U;
 fn V(x: u32, y: u32, k: u32) -> f32 { return textureLoad(vol, vec2u(x, y), k, 0).x; }
 ${COLOUR_AT}
+${PETZVAL}
 @compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= u.w || id.y >= u.h) { return; }
   let p = id.y * u.w + id.x;
@@ -725,15 +742,15 @@ ${COLOUR_AT}
     }
     if (sw > 0.0) { d = sd / sw; t = sk / sw; }
   }
-  dio[p] = d;
+  dio[p] = d + petzval(id.x, id.y, u.w, u.h);
   conf[p] = nrm[p].w;
   if (u.sharp == 0u) { rgb[p] = colourAt(id.x, id.y, t); }
 }`,
   },
-  // Separable colour-guided weighted median filter (5-tap at full res, 3-tap at half res) guided
-  // by full-res RGB aif: sharpens occlusion ramps into crisp jumps without inventing mid-air
-  // intermediate depths and heals isolated surface speckles.
-  wmfH: {
+  // Single-pass isotropic 2D colour-guided weighted median filter (13-tap radius-2 diamond at full
+  // res, 5-tap radius-1 cross at half res) guided by full-res RGB aif: sharpens occlusion ramps
+  // into crisp jumps without directional streaking or mid-air depth interpolation, and heals cracks.
+  wmf2d: {
     layout: ["ro", "ro", "rw", "uni"],
     code: /* wgsl */ `
 @group(0) @binding(0) var<storage, read> src: array<f32>;
@@ -741,51 +758,13 @@ ${COLOUR_AT}
 @group(0) @binding(2) var<storage, read_write> dst: array<f32>;
 struct U { w: u32, h: u32, inv2sig2: f32, r: u32 }
 @group(0) @binding(3) var<uniform> u: U;
-var<workgroup> shD: array<f32, 136>;
-var<workgroup> shC: array<vec3f, 136>;
-@compute @workgroup_size(128, 1) fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_id) lid: vec3u) {
-  let y = wg.y; if (y >= u.h) { return; }
-  let r = i32(min(u.r, 2u)); let W = i32(u.w); let x0 = i32(wg.x * 128u);
-  for (var t = i32(lid.x); t < 128 + 2 * r; t += 128) {
-    let idx = y * u.w + u32(clamp(x0 - r + t, 0, W - 1));
-    shD[u32(t)] = src[idx];
-    shC[u32(t)] = unpack4x8unorm(bitcast<u32>(aif[idx].y)).rgb;
-  }
-  workgroupBarrier();
-  let gx = wg.x * 128u + lid.x; if (gx >= u.w) { return; }
-  let c = i32(lid.x) + r; let c0 = shC[u32(c)];
-  var ds: array<f32, 5>; var ws: array<f32, 5>; var n = 0; var tot = 0.0;
-  for (var d = -r; d <= r; d++) {
-    let dc = shC[u32(c + d)] - c0;
-    let w = exp(-dot(dc, dc) * u.inv2sig2);
-    ds[n] = shD[u32(c + d)]; ws[n] = w; tot += w; n++;
-  }
-  for (var i = 1; i < n; i++) {
-    let kd = ds[i]; let kw = ws[i]; var j = i - 1;
-    while (j >= 0 && ds[j] > kd) { ds[j + 1] = ds[j]; ws[j + 1] = ws[j]; j--; }
-    ds[j + 1] = kd; ws[j + 1] = kw;
-  }
-  let half = 0.5 * tot; var acc = 0.0; var out = ds[n >> 1];
-  for (var i = 0; i < n; i++) { acc += ws[i]; if (acc >= half) { out = ds[i]; break; } }
-  dst[y * u.w + gx] = out;
-}`,
-  },
-  wmfV: {
-    layout: ["ro", "ro", "rw", "uni"],
-    code: /* wgsl */ `
-@group(0) @binding(0) var<storage, read> src: array<f32>;
-@group(0) @binding(1) var<storage, read> aif: array<vec2f>;
-@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
-struct U { w: u32, h: u32, inv2sig2: f32, r: u32 }
-@group(0) @binding(3) var<uniform> u: U;
-var<workgroup> shD: array<f32, 320>;
-var<workgroup> shC: array<vec3f, 320>;
+var<workgroup> shD: array<f32, 400>;
+var<workgroup> shC: array<vec3f, 400>;
 @compute @workgroup_size(16, 16) fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(local_invocation_index) li: u32) {
-  let r = i32(min(u.r, 2u)); let W = i32(u.w); let H = i32(u.h);
-  let bx = i32(wg.x * 16u); let by = i32(wg.y * 16u) - r;
-  let total = u32(16 * (16 + 2 * r));
-  for (var t = li; t < total; t += 256u) {
-    let sx = u32(clamp(bx + i32(t & 15u), 0, W - 1)); let sy = u32(clamp(by + i32(t >> 4u), 0, H - 1));
+  let bx = i32(wg.x * 16u) - 2; let by = i32(wg.y * 16u) - 2;
+  let W = i32(u.w); let H = i32(u.h);
+  for (var t = li; t < 400u; t += 256u) {
+    let sx = u32(clamp(bx + i32(t % 20u), 0, W - 1)); let sy = u32(clamp(by + i32(t / 20u), 0, H - 1));
     let idx = sy * u.w + sx;
     shD[t] = src[idx];
     shC[t] = unpack4x8unorm(bitcast<u32>(aif[idx].y)).rgb;
@@ -793,13 +772,18 @@ var<workgroup> shC: array<vec3f, 320>;
   workgroupBarrier();
   let gx = wg.x * 16u + lid.x; let gy = wg.y * 16u + lid.y;
   if (gx >= u.w || gy >= u.h) { return; }
-  let cy = i32(lid.y) + r; let lx = lid.x; let c0 = shC[u32(cy) * 16u + lx];
-  var ds: array<f32, 5>; var ws: array<f32, 5>; var n = 0; var tot = 0.0;
-  for (var d = -r; d <= r; d++) {
-    let t = u32(cy + d) * 16u + lx;
-    let dc = shC[t] - c0;
-    let w = exp(-dot(dc, dc) * u.inv2sig2);
-    ds[n] = shD[t]; ws[n] = w; tot += w; n++;
+  let cx = i32(lid.x) + 2; let cy = i32(lid.y) + 2;
+  let c0 = shC[u32(cy * 20 + cx)];
+  var ds: array<f32, 13>; var ws: array<f32, 13>; var n = 0; var tot = 0.0;
+  let r = i32(min(u.r, 2u));
+  for (var dy = -r; dy <= r; dy++) {
+    let mx = r - abs(dy);
+    for (var dx = -mx; dx <= mx; dx++) {
+      let t = u32((cy + dy) * 20 + (cx + dx));
+      let dc = shC[t] - c0;
+      let w = exp(-dot(dc, dc) * u.inv2sig2);
+      ds[n] = shD[t]; ws[n] = w; tot += w; n++;
+    }
   }
   for (var i = 1; i < n; i++) {
     let kd = ds[i]; let kw = ws[i]; var j = i - 1;
@@ -1177,13 +1161,13 @@ class Session {
       const uPeak = this.uni("uuuuuuu", [w, h, n, this.o.peakR, this.cw, this.ch, this.o.sharp ? 1 : 0]);
       this.dispatch(pass, "peak", this.bg("peak", [volArr, nrm, this.labels, this.xform, colArr, dio, conf, this.tmp1, uPeak]), g16(w), g16(h));
 
-      // Separable colour-guided weighted median refinement (reuses tmp1 as ping-pong scratch).
-      if (this.agg > 0 && this.o.sharp) {
+      // Single-pass isotropic 2D colour-guided weighted median refinement into tmp1.
+      const useWmf = this.agg > 0 && this.o.sharp;
+      if (useWmf) {
         const wmfR = Math.max(1, 2 >> this.o.halvings);
-        const sigC = 0.065;
+        const sigC = 0.080;
         const uWmf = this.uni("uufu", [w, h, 1 / (2 * sigC * sigC), wmfR]);
-        this.dispatch(pass, "wmfH", this.bg("wmfH", [dio, this.aif, this.tmp1, uWmf]), Math.ceil(w / 128), h);
-        this.dispatch(pass, "wmfV", this.bg("wmfV", [this.tmp1, this.aif, dio, uWmf]), g16(w), g16(h));
+        this.dispatch(pass, "wmf2d", this.bg("wmf2d", [dio, this.aif, this.tmp1, uWmf]), g16(w), g16(h));
       }
 
       // Pack 3-byte RGB stream into m0 (free during finish, N*4 >= ceil(N*3/4)*4).
@@ -1207,7 +1191,7 @@ class Session {
         tempStage = d.createBuffer({ size: totalBytes, usage: U.MAP_READ | U.COPY_DST });
         stage = tempStage;
       }
-      enc.copyBufferToBuffer(dio, 0, stage, 0, N * 4);
+      enc.copyBufferToBuffer(useWmf ? this.tmp1 : dio, 0, stage, 0, N * 4);
       enc.copyBufferToBuffer(conf, 0, stage, oConf, N * 4);
       enc.copyBufferToBuffer(this.m0, 0, stage, oRgb, rgbWords * 4);
       enc.copyBufferToBuffer(this.xform, 0, stage, oXf, n * 16);
