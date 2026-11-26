@@ -19,9 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # demo.html/demo.js render the demo video from local captures (dev server only), so they stay out.
+      - name: Site without dev-only pages
+        run: rsync -a --exclude 'demo.html' --exclude 'demo.js' web/ _site/
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: web
+          path: _site
   deploy:
     needs: build
     runs-on: ubuntu-latest
