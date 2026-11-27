@@ -26,18 +26,6 @@ export const DEFAULTS = { win: 6, halvings: 0, peakR: 6, aggR: 8, aggEps: 2e-3, 
 
 const SEG = 32; // outputs per thread in the sliding-window vertical box filters
 
-// Pixel 9 aspheric Petzval field-curvature correction (diopters): calibrated jointly across
-// ChArUco + ArUco dead-leaves (landscape) and cutting-mat stacks (portrait). The negative r^4
-// term matches the outer-field aspheric turnover so corners don't over-correct.
-const PETZVAL = /* wgsl */ `
-fn petzval(x: u32, y: u32, w: u32, h: u32) -> f32 {
-  let half = f32(max(w, h)) * 0.5;
-  let rx = (f32(x) + 0.5 - f32(w) * 0.5) / half;
-  let ry = (f32(y) + 0.5 - f32(h) * 0.5) / half;
-  let r2 = rx * rx + ry * ry;
-  return 0.54 * r2 - 0.22 * r2 * r2;
-}`;
-
 // ------------------------------------------------------------------------------------ shaders
 const bil = (name, buf, w = "u.w", h = "u.h") => /* wgsl */ `
 fn ${name}(x: f32, y: f32) -> f32 {
@@ -447,7 +435,6 @@ struct U { w: u32, h: u32, n: u32, r: u32, drop: f32, minConf: f32, cw: u32, ch:
 @group(0) @binding(9) var<uniform> u: U;
 fn V(x: u32, y: u32, k: u32) -> f32 { return textureLoad(vol, vec2u(x, y), k, 0).x; }
 ${COLOUR_AT}
-${PETZVAL}
 @compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= u.w || id.y >= u.h) { return; }
   let p = id.y * u.w + id.x;
@@ -466,7 +453,7 @@ ${PETZVAL}
     let w = max(V(id.x, id.y, j) - base, 0.0) * dd;
     sw += w; sd += w * labels[j]; sk += w * f32(j);
   }
-  let d = select(labels[k], sd / sw, sw > 0.0) + petzval(id.x, id.y, u.w, u.h);
+  let d = select(labels[k], sd / sw, sw > 0.0);
   let t = select(f32(k), sk / sw, sw > 0.0);
   decided[p] = 1u;
   let z = 1.0 / max(d, 1e-6);
@@ -713,7 +700,6 @@ struct U { w: u32, h: u32, n: u32, r: u32, cw: u32, ch: u32, sharp: u32 }
 @group(0) @binding(8) var<uniform> u: U;
 fn V(x: u32, y: u32, k: u32) -> f32 { return textureLoad(vol, vec2u(x, y), k, 0).x; }
 ${COLOUR_AT}
-${PETZVAL}
 @compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= u.w || id.y >= u.h) { return; }
   let p = id.y * u.w + id.x;
@@ -742,7 +728,7 @@ ${PETZVAL}
     }
     if (sw > 0.0) { d = sd / sw; t = sk / sw; }
   }
-  dio[p] = d + petzval(id.x, id.y, u.w, u.h);
+  dio[p] = d;
   conf[p] = nrm[p].w;
   if (u.sharp == 0u) { rgb[p] = colourAt(id.x, id.y, t); }
 }`,
