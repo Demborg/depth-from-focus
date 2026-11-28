@@ -270,14 +270,15 @@ const localDepth = (() => {
 
 const stage = document.getElementById("stage");
 const view3d = createPhone3D(stage, { get q() { return orientation.q; } }, { labelsEl: document.getElementById("labels3d") });
+let lastPointsText = "";
 function updateHint3d() {
   const h = document.getElementById("hint3d");
   if (!view3d.visible) { h.hidden = true; return; }
   h.hidden = false;
-  if (view3d.measuring) h.textContent = "tap two points to measure · drag to orbit · pinch to zoom";
-  else if (view3d.tilt) h.textContent = "tilt the phone to look around · touch to drag";
-  else if (view3d.top) h.textContent = "top-down view · drag to orbit · tap Top to return";
-  else h.textContent = "drag to orbit · pinch to zoom · Top for above · Measure to tap";
+  if (view3d.measuring) h.textContent = view3d.top ? "tap 2 points · drag to pan · pinch to zoom" : "tap 2 points · drag to orbit · pinch to zoom";
+  else if (view3d.top) h.textContent = "drag to pan · pinch to zoom";
+  else if (view3d.tilt) h.textContent = "tilt to look around · touch to orbit";
+  else h.textContent = "drag to orbit · pinch to zoom · double-tap to reset";
 }
 function showResult({ result, colours }, meta) {
   const capOri = meta?.frames?.[0]?.orientation ?? meta?.orientation ?? null;
@@ -286,9 +287,10 @@ function showResult({ result, colours }, meta) {
   document.getElementById("legend").hidden = true;
   document.getElementById("bar3d").hidden = false;
   document.getElementById("bar").hidden = true;
+  lastPointsText = `${Math.round(points / 1000)}k points`;
+  status(lastPointsText);
   updateHint3d();
   log(`3D view: ${points.toLocaleString()} points`);
-  status(`${Math.round(points / 1000)}k points`);
 }
 function showCamera() {
   setTimeout(fitStage);
@@ -299,30 +301,24 @@ function showCamera() {
   document.getElementById("bar3d").hidden = true;
   document.getElementById("bar").hidden = false;
   document.getElementById("hint3d").hidden = true;
-  document.getElementById("mbar").hidden = true;
+  document.getElementById("b-mclear").hidden = true;
 }
 const setPressed = (id, on) => {
   const b = document.getElementById(id);
   b.setAttribute("aria-pressed", on);
   b.classList.toggle("outline", !on);
 };
-view3d.onTilt = (on) => { setPressed("b-tilt", on); updateHint3d(); };
+view3d.onTilt = () => updateHint3d();
 view3d.onTop = (on) => { setPressed("b-top", on); updateHint3d(); };
 view3d.onMeasure = ({ on, count, pending, summary }) => {
   setPressed("b-measure", on);
-  const mbar = document.getElementById("mbar");
-  const mtxt = document.getElementById("mbar-text");
-  const mclr = document.getElementById("b-mclear");
-  mbar.hidden = !on && count === 0;
-  mclr.hidden = count === 0 && !pending;
+  document.getElementById("b-mclear").hidden = count === 0 && !pending;
   if (summary) {
-    const hv = summary.levelled ? ` <span>· ↔ ${summary.horiz} · ↕ ${summary.vert}</span>` : "";
-    const extra = pending ? " <span>· tap 2nd pt</span>" : count > 1 ? ` <span>(#${count})</span>` : "";
-    mtxt.innerHTML = `<strong>${summary.total}</strong>${hv}${extra}`;
+    status(summary.levelled ? `${summary.total} (↔${summary.horiz} ↕${summary.vert})` : summary.total);
   } else if (pending) {
-    mtxt.textContent = "1st point set · tap 2nd point";
-  } else if (on) {
-    mtxt.textContent = "Tap two points to measure";
+    status("tap 2nd point");
+  } else if (view3d.visible) {
+    status(lastPointsText);
   }
   updateHint3d();
 };
@@ -338,7 +334,6 @@ async function replay(id) {
   }
   showResult(await local.finish(meta), meta);
 }
-document.getElementById("b-tilt").onclick = () => view3d.setTilt(!view3d.tilt);
 document.getElementById("b-top").onclick = () => view3d.setTop(!view3d.top);
 document.getElementById("b-measure").onclick = () => view3d.setMeasure(!view3d.measuring);
 document.getElementById("b-mclear").onclick = () => view3d.clearMeasure();

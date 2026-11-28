@@ -28,12 +28,32 @@ export function createPhone3D(stage, orientation, { labelsEl = null } = {}) {
   controls.enableDamping = true;
   controls.enabled = false;
   controls.rotateSpeed = 0.5; // a phone-width drag is about a half turn at 1.0
+  controls.minDistance = 0.12;
+  controls.maxDistance = 10;
 
   let img = null; // { w, h, f } of the capture, for the field of view
   let cloud = null, grid = null, gizmo = null, levelled = false;
   let tilt = false, topView = false, measuring = false, atHome = true, q0 = null;
   let onTilt = () => {}, onTop = () => {}, onMeasure = () => {};
   let fly = null; // { t0, p0, p1, c0, c1, q0, q1 }
+
+  function applyControlMode() {
+    if (topView) {
+      // Locked top-down map interaction: 1-finger pan, 2-finger pinch zoom, no 3D rotation.
+      controls.enableRotate = false;
+      controls.enablePan = true;
+      controls.screenSpacePanning = true;
+      controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
+      controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    } else {
+      controls.enableRotate = true;
+      controls.enablePan = true;
+      controls.screenSpacePanning = false;
+      controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+      controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    }
+  }
+  applyControlMode();
 
   const target = new THREE.Vector3(); // median focus point along capture optical axis
   const cloudBox = new THREE.Box3();
@@ -104,6 +124,7 @@ export function createPhone3D(stage, orientation, { labelsEl = null } = {}) {
       if (tilt) setTilt(false);
       topView = true;
       atHome = false;
+      applyControlMode();
       controls.enabled = true;
       camera.up.set(0, 1, 0);
       const c = cloudBox.getCenter(new THREE.Vector3());
@@ -123,21 +144,18 @@ export function createPhone3D(stage, orientation, { labelsEl = null } = {}) {
       startFly(new THREE.Vector3(c.x - hx * 0.002, yTop, c.z - hz * 0.002), c);
     } else {
       topView = false;
+      applyControlMode();
       home(true);
     }
     onTop(topView);
   }
 
   function setTilt(on) {
-    tilt = on && !!orientation.q;
+    tilt = on && !!orientation.q && !topView && !measuring;
     controls.enabled = !tilt;
     if (tilt) {
-      if (topView) { topView = false; onTop(false); }
-      if (measuring) setMeasure(false);
       q0 = [...orientation.q];
       home();
-    } else {
-      controls.target.copy(controls.target);
     }
     onTilt(tilt);
   }
@@ -241,7 +259,7 @@ export function createPhone3D(stage, orientation, { labelsEl = null } = {}) {
 
   // Track active pointers so multi-touch pinch/pan never drops a measure pin.
   const activePtrs = new Set();
-  let down = null;
+  let down = null, lastTap = 0;
   canvas.addEventListener("pointerdown", (e) => {
     activePtrs.add(e.pointerId);
     if (tilt) setTilt(false);
@@ -258,15 +276,23 @@ export function createPhone3D(stage, orientation, { labelsEl = null } = {}) {
       atHome = false;
     }
     if (down && down.id === e.pointerId && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 10) {
-      if (topView) { topView = false; onTop(false); }
       down = null;
     }
   });
   canvas.addEventListener("wheel", () => { atHome = false; }, { passive: true });
   const endPtr = (e, isUp) => {
     activePtrs.delete(e.pointerId);
-    if (isUp && measuring && down && down.id === e.pointerId && performance.now() - down.t < 450 && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 10) {
-      tapAt(e.clientX, e.clientY, down.touch);
+    const now = performance.now();
+    if (isUp && down && down.id === e.pointerId && now - down.t < 450 && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 10) {
+      if (measuring) {
+        tapAt(e.clientX, e.clientY, down.touch);
+      } else if (!topView && now - lastTap < 320) {
+        // Double-tap in 3D resets cleanly to the capture pose (and re-enables Tilt if available).
+        lastTap = 0;
+        if (orientation.q) setTilt(true); else home(true);
+      } else {
+        lastTap = now;
+      }
     }
     if (down?.id === e.pointerId) down = null;
   };
@@ -308,7 +334,11 @@ export function createPhone3D(stage, orientation, { labelsEl = null } = {}) {
       if (u >= 1) {
         const doneQ = fly.q1;
         fly = null;
+        // Flush any stale OrbitControls damping before handing over control.
+        controls.enableDamping = false;
         if (!doneQ) controls.update();
+        controls.enableDamping = true;
+        if (doneQ && !topView && !measuring && orientation.q) setTilt(true);
       }
     } else if (!atHome) {
       controls.update();
@@ -424,6 +454,7 @@ export function createPhone3D(stage, orientation, { labelsEl = null } = {}) {
       clearMeasure();
       topView = false;
       measuring = false;
+      applyControlMode();
       const angle = capOri?.angle ?? screenAngle;
       toImage.setFromAxisAngle(zAxis, (angle * Math.PI) / 180);
       const { k, zs, fwd } = build(r, colours, depth, capOri);
