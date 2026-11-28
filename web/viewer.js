@@ -6,7 +6,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RemoteLink } from "./net/link.js";
 import { pairString, parsePairString } from "./net/signal.js";
 import { laggedDiopters } from "./lag.js";
-import { focalPx, cloudMask } from "./cloud.js";
+import { focalPx, cloudMask, makeLevelTransform } from "./cloud.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -185,32 +185,7 @@ function addLivePoints(m) {
 
 // ---------------------------------------------------------------- geometry
 const view = { depth: "smooth", conf: 1.6, size: 2, level: true, edge: 0.02, blob: 0.01 };
-
-function quatRotate([qx, qy, qz, qw], [x, y, z]) {
-  // v' = q v q*
-  const tx = 2 * (qy * z - qz * y), ty = 2 * (qz * x - qx * z), tz = 2 * (qx * y - qy * x);
-  return [x + qw * tx + (qy * tz - qz * ty), y + qw * ty + (qz * tx - qx * tz), z + qw * tz + (qx * ty - qy * tx)];
-}
-
-// Camera coords (x right, y down, z forward) -> three.js world (y up).
-// Device frame: x right, y up (portrait top), z out of the screen; the back camera looks along -z.
-// World (sensor): x east, y north, z up -> three: (east, up, -north). Then yaw so the phone faces -z.
-function makeTransform(meta) {
-  const q = view.level && meta.orientation?.quaternion;
-  if (!q) return (X, Y, Z) => [X, -Y, -Z];
-  const toThree = ([e, n, u]) => [e, u, -n];
-  // With the screen turned (landscape: angle 90 or 270) the image's axes are the device's turned by
-  // that angle about z, so image vectors are turned back by it before applying the device rotation.
-  const a = (-(meta.orientation.angle ?? 0) * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
-  const toDevice = ([x, y, z]) => [x * ca - y * sa, x * sa + y * ca, z];
-  const fwd = toThree(quatRotate(q, [0, 0, -1]));
-  const yaw = Math.atan2(fwd[0], -fwd[2]); // rotate so forward points to -z
-  const cy = Math.cos(yaw), sy = Math.sin(yaw);
-  return (X, Y, Z) => {
-    const [x, y, z] = toThree(quatRotate(q, toDevice([X, -Y, -Z])));
-    return [x * cy - z * sy, y, x * sy + z * cy];
-  };
-}
+const makeTransform = (meta) => makeLevelTransform(view.level ? meta.orientation : null);
 
 function build() {
   if (!capture) return;

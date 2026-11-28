@@ -6,6 +6,30 @@ export const F_LONG_PX = 1602;
 /** Focal length in pixels for a w x h image of that stream, in either orientation. */
 export const focalPx = (w, h) => F_LONG_PX * (Math.max(w, h) / 1920);
 
+function quatRotate([qx, qy, qz, qw], [x, y, z]) {
+  const tx = 2 * (qy * z - qz * y), ty = 2 * (qz * x - qx * z), tz = 2 * (qx * y - qy * x);
+  return [x + qw * tx + (qy * tz - qz * ty), y + qw * ty + (qz * tx - qx * tz), z + qw * tz + (qx * ty - qy * tx)];
+}
+
+/** Camera coords (x right, y down, z forward) -> gravity-levelled three.js world (y up, camera
+ *  forward yawed to -z). Falls back to unlevelled camera frame when orientation is absent. */
+export function makeLevelTransform(orientation) {
+  const q = orientation?.quaternion;
+  if (!q) return (X, Y, Z) => [X, -Y, -Z];
+  const toThree = ([e, n, u]) => [e, u, -n];
+  // With the screen turned (landscape: angle 90 or 270) the image's axes are the device's turned by
+  // that angle about z, so image vectors are turned back by it before applying the device rotation.
+  const a = (-(orientation.angle ?? 0) * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
+  const toDevice = ([x, y, z]) => [x * ca - y * sa, x * sa + y * ca, z];
+  const fwd = toThree(quatRotate(q, [0, 0, -1]));
+  const yaw = Math.atan2(fwd[0], -fwd[2]); // rotate so forward points to -z
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  return (X, Y, Z) => {
+    const [x, y, z] = toThree(quatRotate(q, toDevice([X, -Y, -Z])));
+    return [x * cy - z * sy, y, x * sy + z * cy];
+  };
+}
+
 // Flying pixels: drop points whose 3x3 neighbourhood spans more than `rel` of their depth.
 // Separable 3x3 min/max on depth (computed once), so it is a few linear passes.
 export function discontinuities(Z, w, h, rel) {

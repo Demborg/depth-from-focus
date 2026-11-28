@@ -269,13 +269,24 @@ const localDepth = (() => {
 })();
 
 const stage = document.getElementById("stage");
-const view3d = createPhone3D(stage, { get q() { return orientation.q; } });
+const view3d = createPhone3D(stage, { get q() { return orientation.q; } }, { labelsEl: document.getElementById("labels3d") });
+function updateHint3d() {
+  const h = document.getElementById("hint3d");
+  if (!view3d.visible) { h.hidden = true; return; }
+  h.hidden = false;
+  if (view3d.measuring) h.textContent = "tap two points to measure · drag to orbit · pinch to zoom";
+  else if (view3d.tilt) h.textContent = "tilt the phone to look around · touch to drag";
+  else if (view3d.top) h.textContent = "top-down view · drag to orbit · tap Top to return";
+  else h.textContent = "drag to orbit · pinch to zoom · Top for above · Measure to tap";
+}
 function showResult({ result, colours }, meta) {
-  const { points } = view3d.show(result, colours, { screenAngle: meta?.frames?.[0]?.orientation?.angle ?? 0 });
+  const capOri = meta?.frames?.[0]?.orientation ?? meta?.orientation ?? null;
+  const { points } = view3d.show(result, colours, { screenAngle: capOri?.angle ?? 0, orientation: capOri });
   stage.classList.add("in3d");
   document.getElementById("legend").hidden = true;
   document.getElementById("bar3d").hidden = false;
   document.getElementById("bar").hidden = true;
+  updateHint3d();
   log(`3D view: ${points.toLocaleString()} points`);
   status(`${Math.round(points / 1000)}k points`);
 }
@@ -288,13 +299,32 @@ function showCamera() {
   document.getElementById("bar3d").hidden = true;
   document.getElementById("bar").hidden = false;
   document.getElementById("hint3d").hidden = true;
+  document.getElementById("mbar").hidden = true;
 }
-view3d.onTilt = (on) => {
-  const b = document.getElementById("b-tilt");
-  b.setAttribute("aria-pressed", on); b.classList.toggle("outline", !on);
-  const h = document.getElementById("hint3d");
-  h.hidden = false;
-  h.textContent = on ? "tilt the phone to look around · touch to drag" : "drag to orbit · pinch to zoom · Tilt to reset";
+const setPressed = (id, on) => {
+  const b = document.getElementById(id);
+  b.setAttribute("aria-pressed", on);
+  b.classList.toggle("outline", !on);
+};
+view3d.onTilt = (on) => { setPressed("b-tilt", on); updateHint3d(); };
+view3d.onTop = (on) => { setPressed("b-top", on); updateHint3d(); };
+view3d.onMeasure = ({ on, count, pending, summary }) => {
+  setPressed("b-measure", on);
+  const mbar = document.getElementById("mbar");
+  const mtxt = document.getElementById("mbar-text");
+  const mclr = document.getElementById("b-mclear");
+  mbar.hidden = !on && count === 0;
+  mclr.hidden = count === 0 && !pending;
+  if (summary) {
+    const hv = summary.levelled ? ` <span>· ↔ ${summary.horiz} · ↕ ${summary.vert}</span>` : "";
+    const extra = pending ? " <span>· tap 2nd pt</span>" : count > 1 ? ` <span>(#${count})</span>` : "";
+    mtxt.innerHTML = `<strong>${summary.total}</strong>${hv}${extra}`;
+  } else if (pending) {
+    mtxt.textContent = "1st point set · tap 2nd point";
+  } else if (on) {
+    mtxt.textContent = "Tap two points to measure";
+  }
+  updateHint3d();
 };
 document.getElementById("b-camera").onclick = showCamera;
 
@@ -309,6 +339,9 @@ async function replay(id) {
   showResult(await local.finish(meta), meta);
 }
 document.getElementById("b-tilt").onclick = () => view3d.setTilt(!view3d.tilt);
+document.getElementById("b-top").onclick = () => view3d.setTop(!view3d.top);
+document.getElementById("b-measure").onclick = () => view3d.setMeasure(!view3d.measuring);
+document.getElementById("b-mclear").onclick = () => view3d.clearMeasure();
 
 // Probe lens settling: jump between two focus values and record per-frame sharpness of a
 // center crop, so we can see how many frames/ms the lens needs to settle.
@@ -418,7 +451,9 @@ async function startPaired(pairing) {
 
 window.dff = { start, caps, lockAuto, setFocus, sweep, settleProbe, log, orientation, view3d, showCamera, replay };
 const pairing = pairFromUrl(location.href);
+const replayId = new URLSearchParams(location.search).get("stack");
 if (pairing) startPaired(pairing).catch((e) => log("ERR", String(e)));
+else if (replayId) replay(replayId).catch((e) => log("replay failed", String(e)));
 document.getElementById("start").onclick = () => start().catch((e) => log("ERR", String(e)));
 // The same fast continuous sweep the viewer asks for (lens lag is corrected afterwards).
 document.getElementById("sweep").onclick = () => sweep({ n: 40, lo: 0.25, hi: 1.6, settle: 0, skip: 0 }).catch((e) => log("ERR", String(e)));
