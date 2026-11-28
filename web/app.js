@@ -46,12 +46,14 @@ async function start({ width = 1920, height = 1080 } = {}) {
     video: { facingMode: { exact: "environment" }, width: { ideal: width }, height: { ideal: height } },
   });
   state.track = state.stream.getVideoTracks()[0];
+  state.track.addEventListener("ended", () => { syncSweepBtn(); });
   video.srcObject = state.stream;
   await video.play();
   await nextFrame();
   const info = caps();
   log("camera started", info.settings.width + "x" + info.settings.height);
   fitStage();
+  syncSweepBtn();
   status("ready");
   remoteLog({ kind: "caps", ...info });
   return info;
@@ -445,12 +447,19 @@ async function startPaired(pairing) {
 }
 
 window.dff = { start, caps, lockAuto, setFocus, sweep, settleProbe, log, orientation, view3d, showCamera, replay };
+const sweepBtn = document.getElementById("sweep");
+const cameraLive = () => state.track?.readyState === "live";
+function syncSweepBtn() { sweepBtn.textContent = cameraLive() ? "Sweep" : "Start camera"; }
 const pairing = pairFromUrl(location.href);
 const replayId = new URLSearchParams(location.search).get("stack");
-if (pairing) startPaired(pairing).catch((e) => log("ERR", String(e)));
-else if (replayId) replay(replayId).catch((e) => log("replay failed", String(e)));
-document.getElementById("start").onclick = () => start().catch((e) => log("ERR", String(e)));
+if (pairing) {
+  startPaired(pairing).catch((e) => { syncSweepBtn(); log("ERR", String(e)); });
+} else if (replayId) {
+  replay(replayId).catch((e) => log("replay failed", String(e)));
+} else {
+  start().catch((e) => { syncSweepBtn(); status("tap to start camera"); log("auto-start:", String(e)); });
+}
 // The same fast continuous sweep the viewer asks for (lens lag is corrected afterwards).
-document.getElementById("sweep").onclick = () => sweep({ n: 40, lo: 0.25, hi: 1.6, settle: 0, skip: 0 }).catch((e) => log("ERR", String(e)));
+sweepBtn.onclick = () => (cameraLive() ? sweep({ n: 40, lo: 0.25, hi: 1.6, settle: 0, skip: 0 }) : start()).catch((e) => { syncSweepBtn(); log("ERR", String(e)); });
 window.addEventListener("error", (e) => remoteLog({ kind: "error", msg: String(e.message) }));
 remoteLog({ kind: "loaded", ua: navigator.userAgent });
