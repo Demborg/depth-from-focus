@@ -62,9 +62,9 @@ function urlOpts() {
   return opts;
 }
 
-function newIngest({ lag = true, orientation = null } = {}) {
+function newIngest({ lag = true, orientation = null, frames = 40 } = {}) {
   let chain = Promise.resolve(), pushed = 0, workMs = 0, lastPush = 0, tFinish = 0;
-  worker.postMessage({ type: "begin", opts: urlOpts(), lag });
+  worker.postMessage({ type: "begin", opts: { frames, ...urlOpts() }, lag });
   startLive(orientation);
   const progress = new Promise((res) => {
     onWorker = (m) => {
@@ -184,7 +184,7 @@ function addLivePoints(m) {
 }
 
 // ---------------------------------------------------------------- geometry
-const view = { depth: "smooth", conf: 1.6, size: 2, level: true, edge: 0.02, blob: 0.01 };
+const view = { depth: "smooth", conf: 1.6, size: 2, level: true, edge: 0.02, blob: 0.002 };
 const makeTransform = (meta) => makeLevelTransform(view.level ? meta.orientation : null);
 
 function build() {
@@ -281,7 +281,7 @@ async function replay(id) {
   const meta = await fetch(`stacks/${id}/meta.json`).then((r) => r.json());
   const blobs = await Promise.all(meta.frames.map((f) => fetch(`stacks/${id}/${f.file}`).then((r) => r.blob())));
   const lag = meta.frames.every((f) => f.t_req_ms != null) && meta.params?.settle === 0;
-  const ingest = newIngest({ lag, orientation: meta.orientation });
+  const ingest = newIngest({ lag, orientation: meta.orientation, frames: meta.frames.length });
   // ?realtime feeds frames at their original capture times, like a live sweep.
   const realtime = new URLSearchParams(location.search).has("realtime");
   const t0 = performance.now();
@@ -350,15 +350,16 @@ link.addEventListener("wire", (e) => {
 
 $("b-sweep").addEventListener("click", () => {
   if (!link.wire) return;
-  pending = newIngest({ lag: true, orientation: phoneOrientation });
+  const lo = +$("r-near").value / 100, hi = +$("r-far").value / 100;
+  const n = lo < 0.2 ? 60 : 40;
+  pending = newIngest({ lag: true, orientation: phoneOrientation, frames: n });
   $("b-sweep").disabled = true;
   $("prog").value = 0;
   capture && (capture.framed = capture.framed); // keep the current view while re-capturing
-  const lo = +$("r-near").value / 100, hi = +$("r-far").value / 100;
   const id = new Date().toISOString().replace(/[:.]/g, "-");
   saving = SAVE ? { id, uploads: [] } : null;
   ui.status("Sweeping…", "linked");
-  link.wire.send({ type: "sweep", params: { n: 40, lo, hi, settle: 0, skip: 0, id } });
+  link.wire.send({ type: "sweep", params: { n, lo, hi, settle: 0, skip: 0, id } });
 });
 // ---------------------------------------------------------------- measuring
 // Click two points on the cloud to measure the straight-line distance between them (metres, in
