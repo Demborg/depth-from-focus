@@ -277,7 +277,7 @@ function updateHint3d() {
   const h = document.getElementById("hint3d");
   if (!view3d.visible) { h.hidden = true; return; }
   h.hidden = false;
-  if (view3d.measuring) h.textContent = view3d.top ? "tap 2 points · drag to pan · pinch to zoom" : "tap 2 points · drag to orbit · pinch to zoom";
+  if (view3d.measuring) h.textContent = view3d.top ? "tap 2 points · drag handles · pan/pinch" : "tap 2 points · drag handles · orbit/pinch";
   else if (view3d.top) h.textContent = "drag to pan · pinch to zoom";
   else if (view3d.tilt) h.textContent = "tilt to look around · touch to orbit";
   else h.textContent = "drag to orbit · pinch to zoom · double-tap to reset";
