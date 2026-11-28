@@ -114,7 +114,7 @@ async function main() {
   // The cloud. Each point appears once the sweep's focus has passed its depth (flashing with the
   // band) and disappears when the return band passes it, drifting up a little as it goes.
   const tm = performance.now();
-  const f = focalPx(r.w, r.h), { Z, keep } = cloudMask(r, r.diopter, { edge: num("edge", 0.02), blob: num("blob", 0.01) });
+  const f = focalPx(r.w, r.h), { Z, keep } = cloudMask(r, r.diopter, { edge: num("edge", 0.02), blob: num("blob", 0.002) });
   const maskMs = performance.now() - tm;
   const pos = [], col = [], ps = [], dio = [], rnd = [], centre = [];
   for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {

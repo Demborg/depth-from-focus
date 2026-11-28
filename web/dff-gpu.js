@@ -755,12 +755,14 @@ ${FIELD_CURVATURE}
     if (sw > 0.0) { d = sd / sw; t = sk / sw; }
   }
   // Reject peaks pinned to the sweep's near/far stop (including lag-parked start frames where
-  // labels[k] == labels[0]) or monotonic curves that never turned over from either end.
+  // labels[k] == labels[0]) so out-of-range objects never flatten onto a card at the wrong depth.
+  // Use 0.98 at the far stop (vs 0.90 near) since wide far-end DOF makes genuine peaks near hi
+  // drop slowly before frame n - 1.
   let d0 = labels[0u]; let dN = labels[u.n - 1u];
   let v0 = V(id.x, id.y, 0u); let vN = V(id.x, id.y, u.n - 1u);
   let atStop = k == 0u || k == u.n - 1u
             || abs(labels[k] - d0) < 1e-4 || abs(labels[k] - dN) < 1e-4
-            || (best > 0.0 && (v0 >= 0.90 * best || vN >= 0.90 * best));
+            || (best > 0.0 && (v0 >= 0.90 * best || vN >= 0.98 * best));
   dio[p] = fieldCurve(d, id.x, id.y, u.w, u.h);
   conf[p] = select(nrm[p].w, 0.0, oob || atStop);
   if (u.sharp == 0u) { rgb[p] = colourAt(id.x, id.y, t); }
