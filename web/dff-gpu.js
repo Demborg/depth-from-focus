@@ -710,7 +710,7 @@ struct U { w: u32, h: u32, r: i32, cnt: u32 }
 @group(0) @binding(5) var<storage, read_write> dio: array<f32>;
 @group(0) @binding(6) var<storage, read_write> conf: array<f32>;
 @group(0) @binding(7) var<storage, read_write> rgb: array<u32>;
-struct U { w: u32, h: u32, n: u32, r: u32, cw: u32, ch: u32, sharp: u32 }
+struct U { w: u32, h: u32, n: u32, r: u32, cw: u32, ch: u32, sharp: u32, qscale: f32, rim: f32 }
 @group(0) @binding(8) var<uniform> u: U;
 fn V(x: u32, y: u32, k: u32) -> f32 { return textureLoad(vol, vec2u(x, y), k, 0).x; }
 ${COLOUR_AT}
@@ -718,8 +718,19 @@ ${FIELD_CURVATURE}
 @compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= u.w || id.y >= u.h) { return; }
   let p = id.y * u.w + id.x;
+  let cx = (f32(u.w) - 1.0) * 0.5; let cy = (f32(u.h) - 1.0) * 0.5;
+  let px = f32(id.x) - cx; let py = f32(id.y) - cy;
+  let maxX = f32(u.w - 1u) - u.rim; let maxY = f32(u.h - 1u) - u.rim;
+  var oob = false;
   var best = -3.4e38; var k = 0u;
-  for (var j = 0u; j < u.n; j++) { let v = V(id.x, id.y, j); if (v > best) { best = v; k = j; } }
+  for (var j = 0u; j < u.n; j++) {
+    let v = V(id.x, id.y, j);
+    if (v > best) { best = v; k = j; }
+    let tr = xform[j];
+    let wx = cx + px * tr.x + tr.y * u.qscale;
+    let wy = cy + py * tr.x + tr.z * u.qscale;
+    if (wx < u.rim || wx > maxX || wy < u.rim || wy > maxY) { oob = true; }
+  }
   var d = labels[k];
   var t = f32(k);
   if (u.r == 0u) {
@@ -743,8 +754,15 @@ ${FIELD_CURVATURE}
     }
     if (sw > 0.0) { d = sd / sw; t = sk / sw; }
   }
+  // Reject peaks pinned to the sweep's near/far stop (including lag-parked start frames where
+  // labels[k] == labels[0]) or monotonic curves that never turned over from either end.
+  let d0 = labels[0u]; let dN = labels[u.n - 1u];
+  let v0 = V(id.x, id.y, 0u); let vN = V(id.x, id.y, u.n - 1u);
+  let atStop = k == 0u || k == u.n - 1u
+            || abs(labels[k] - d0) < 1e-4 || abs(labels[k] - dN) < 1e-4
+            || (best > 0.0 && (v0 >= 0.90 * best || vN >= 0.90 * best));
   dio[p] = fieldCurve(d, id.x, id.y, u.w, u.h);
-  conf[p] = nrm[p].w;
+  conf[p] = select(nrm[p].w, 0.0, oob || atStop);
   if (u.sharp == 0u) { rgb[p] = colourAt(id.x, id.y, t); }
 }`,
   },
@@ -957,7 +975,7 @@ class Session {
       gn1: this.bg("gnStep", [this.gnAcc, this.rel, this.xform, this.u.gn1]),
       rescaleH: this.bg("rescaleH", [this.m0, this.xform, this.tmp1, this.u.frame]),
     };
-    this.grow(40);
+    this.grow(Math.max(4, o.frames || 40));
   }
 
   ensureSrc2d() {
@@ -1159,7 +1177,8 @@ class Session {
       }
 
       // Peak writes into dio, conf (and into tmp1 for packed RGB when sharp = 0).
-      const uPeak = this.uni("uuuuuuu", [w, h, n, this.o.peakR, this.cw, this.ch, this.o.sharp ? 1 : 0]);
+      const rim = Math.max(2, this.winR);
+      const uPeak = this.uni("uuuuuuuff", [w, h, n, this.o.peakR, this.cw, this.ch, this.o.sharp ? 1 : 0, this.qscale, rim]);
       this.dispatch(pass, "peak", this.bg("peak", [volArr, nrm, this.labels, this.xform, colArr, dio, conf, this.tmp1, uPeak]), g16(w), g16(h));
 
       // Single-pass isotropic 2D colour-guided weighted median refinement into tmp1.

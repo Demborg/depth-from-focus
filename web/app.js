@@ -168,7 +168,7 @@ async function sweep({ n = 30, settle = 150, skip = 2, quality = 0.95, lo, hi, i
   sink ??= serverSink(id);
   view3d.hide();
   const highlight = document.getElementById("hl") ? makeHighlighter(document.getElementById("hl")) : null;
-  const local = localDepth.begin();
+  const local = localDepth.begin(n);
   const locked = lock ? await lockAuto() : null;
   const s0 = state.track.getSettings();
   const canvas = new OffscreenCanvas(s0.width, s0.height);
@@ -242,11 +242,11 @@ const localDepth = (() => {
     return worker;
   };
   return {
-    begin() {
+    begin(frames = 40) {
       const w = get();
       let pushMs = 0;
       const mySeq = ++seq;
-      w.postMessage({ type: "begin", opts: urlOpts(), lag: true });
+      w.postMessage({ type: "begin", opts: { frames, ...urlOpts() }, lag: true });
       const result = new Promise((res, rej) => {
         onMsg = (m) => {
           if (m.type === "pushed") pushMs += m.ms;
@@ -329,7 +329,7 @@ document.getElementById("b-camera").onclick = showCamera;
 // Dev: run a stored stack (dev server /stacks/<id>) through the on-device depth and 3D view.
 async function replay(id) {
   const meta = await fetch(`stacks/${id}/meta.json`).then((r) => r.json());
-  const local = localDepth.begin();
+  const local = localDepth.begin(meta.frames.length);
   for (const [i, f] of meta.frames.entries()) {
     const bitmap = await createImageBitmap(await fetch(`stacks/${id}/${f.file}`).then((r) => r.blob()));
     local.frame(i, bitmap, f);
@@ -460,6 +460,6 @@ if (pairing) {
   start().catch((e) => { syncSweepBtn(); status("tap to start camera"); log("auto-start:", String(e)); });
 }
 // The same fast continuous sweep the viewer asks for (lens lag is corrected afterwards).
-sweepBtn.onclick = () => (cameraLive() ? sweep({ n: 40, lo: 0.25, hi: 1.6, settle: 0, skip: 0 }) : start()).catch((e) => { syncSweepBtn(); log("ERR", String(e)); });
+sweepBtn.onclick = () => (cameraLive() ? sweep({ n: 60, lo: 0.12, hi: 1.6, settle: 0, skip: 0 }) : start()).catch((e) => { syncSweepBtn(); log("ERR", String(e)); });
 window.addEventListener("error", (e) => remoteLog({ kind: "error", msg: String(e.message) }));
 remoteLog({ kind: "loaded", ua: navigator.userAgent });

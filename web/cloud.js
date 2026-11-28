@@ -45,6 +45,8 @@ export function discontinuities(Z, w, h, rel) {
     const l = Math.min(lo[p - w], lo[p], lo[p + w]), u = Math.max(hi[p - w], hi[p], hi[p + w]);
     out[p] = u - l > rel * l ? 1 : 0;
   }
+  for (let x = 0; x < w; x++) { out[x] = 1; out[(h - 1) * w + x] = 1; }
+  for (let y = 0; y < h; y++) { out[y * w] = 1; out[y * w + (w - 1)] = 1; }
   return out;
 }
 
